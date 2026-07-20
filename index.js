@@ -677,8 +677,9 @@ function createAgentBlock(raw) {
   persistBlocks();
   controller?.sendMessageToEditor({
     type: "show-message",
-    message: `New block "${block.name}" added - drag it from the block list` +
-      (block.where ? ` onto ${block.where}` : ""),
+    message:
+      `New block "${block.name}" - add it with the + action picker` +
+      (block.where ? ` on ${block.where}` : ""),
     messageType: "success",
   });
   return block;

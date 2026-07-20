@@ -579,13 +579,14 @@
           const btn = card.querySelector(".ga-card-btn");
           if (msg.ok) {
             btn.disabled = true;
-            btn.textContent = "Added to palette";
+            btn.textContent = "Added";
             const hint = document.createElement("div");
             hint.className = "ga-card-where";
             hint.style.marginTop = "6px";
             hint.textContent =
-              "Drag it from the block list" +
-              (msg.where ? ` onto ${msg.where}.` : ".");
+              (msg.where ? `Select ${msg.where}, ` : "Select the event, ") +
+              "click + to add an action, and pick it from the top of the " +
+              "list (or search its name). Then Store.";
             card.appendChild(hint);
           } else {
             btn.textContent = "Could not create";
