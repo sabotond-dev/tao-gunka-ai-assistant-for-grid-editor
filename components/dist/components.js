@@ -590,6 +590,18 @@
           el.appendChild(btn);
         }
         this.finish();
+      } else if (msg.type === "chat-history") {
+        // Restore the conversation after an editor restart; only into
+        // an untouched log, so reconnects never duplicate it.
+        if (!this.log.querySelector(".ga-wrap") && msg.turns?.length) {
+          for (const turn of msg.turns) {
+            this.addMsg("user", turn.q);
+            const el = this.addMsg("ai", "");
+            el._raw = turn.a;
+            el.innerHTML = renderMarkdown(turn.a);
+          }
+          this.scrollDown(true);
+        }
       } else if (msg.type === "block-created") {
         const card = this.pendingCards.get(msg.requestId);
         this.pendingCards.delete(msg.requestId);

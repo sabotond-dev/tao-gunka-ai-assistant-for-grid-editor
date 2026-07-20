@@ -118,6 +118,9 @@ function rememberTurn(q, a) {
   if (!a) return;
   transcript.push({ q: q.slice(0, 1000), a: a.slice(0, 2000) });
   if (transcript.length > 6) transcript.shift();
+  // Every finished turn lands on disk, so closing the editor never
+  // loses the conversation.
+  persistSettings();
 }
 
 // npm-installed CLIs are .cmd shims, which Node refuses to spawn
@@ -807,6 +810,8 @@ function persistSettings() {
       backend: backendId,
       blocks: agentBlocks,
       nextBlockNum,
+      transcript,
+      lastSessionId,
     },
   });
 }
@@ -823,6 +828,14 @@ exports.loadPackage = async function (gridController, persistedData) {
   }
   nextBlockNum = Number(persistedData?.nextBlockNum) || agentBlocks.length + 1;
   for (const block of agentBlocks) registerAgentBlock(block);
+  if (Array.isArray(persistedData?.transcript)) {
+    transcript = persistedData.transcript
+      .filter((t) => t && typeof t.q === "string" && typeof t.a === "string")
+      .slice(-6);
+  }
+  if (typeof persistedData?.lastSessionId === "string") {
+    lastSessionId = persistedData.lastSessionId;
+  }
   profilesDir = findProfilesDir();
   writeContextFiles();
 };
@@ -857,6 +870,7 @@ exports.addMessagePort = async function (port, senderId) {
       stopActiveChat();
       lastSessionId = undefined;
       transcript = [];
+      persistSettings();
     } else if (msg?.type === "backend-login") {
       if (BACKENDS[msg.backend]) runBackendLogin(msg.backend);
     } else if (msg?.type === "create-block") {
@@ -899,6 +913,9 @@ exports.addMessagePort = async function (port, senderId) {
   });
   port.start();
   sendAgentStatus();
+  if (transcript.length > 0) {
+    toPanel({ type: "chat-history", turns: transcript });
+  }
 };
 
 // gps("package-grid-agent", "relay", key, value) from generated
