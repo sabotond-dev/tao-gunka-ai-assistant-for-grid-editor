@@ -618,11 +618,12 @@ let nextBlockNum = 1;
 
 function agentBlockIcon() {
   return (
-    '<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-    'xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12 3v4M5 10l3 2M19 10l-3 2"/>' +
-    '<rect x="7" y="12" width="10" height="8" rx="2"/></svg>'
+    '<svg width="100%" height="100%" viewBox="0 0 24 24" ' +
+    'fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M12 3c.7 4.8 3.7 7.8 8.5 8.5v1C15.7 13.2 12.7 16.2 12 ' +
+    "21c-.7-4.8-3.7-7.8-8.5-8.5v-1C8.3 10.8 11.3 7.8 12 3z\"/>" +
+    '<path d="M19 2c.3 1.7 1.3 2.7 3 3-1.7.3-2.7 1.3-3 3-.3-1.7-1.3' +
+    '-2.7-3-3 1.7-.3 2.7-1.3 3-3z" opacity="0.7"/></svg>'
   );
 }
 
