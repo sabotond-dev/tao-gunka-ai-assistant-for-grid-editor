@@ -392,23 +392,49 @@
           }
         }
       } else if (msg.type === "chat-login-needed") {
+        const backend = msg.backend ?? "claude";
         const guides = {
           claude:
-            "Claude Code is not signed in yet. One-time setup: open a " +
-            "terminal, start the Claude CLI, run /login and pick the " +
-            "subscription sign-in. Then ask again.",
+            "Claude Code is not signed in yet. One click opens a " +
+            "terminal with the CLI: type /login there, pick the " +
+            "subscription sign-in, then ask again.",
           codex:
-            "Codex is not signed in yet. One-time setup: open a " +
-            "terminal, run codex login and finish the ChatGPT sign-in " +
-            "in the browser. Then ask again.",
+            "Codex is not signed in yet. One click opens the ChatGPT " +
+            "sign-in in your browser; finish it there and ask again.",
           gemini:
-            "Gemini is not signed in yet. One-time setup: open a " +
-            "terminal, run gemini and complete the Google sign-in. " +
-            "Then ask again.",
+            "Gemini is not signed in yet. Open a terminal, run gemini " +
+            "and complete the Google sign-in. Then ask again.",
         };
-        const el = this.addMsg("ai", guides[msg.backend] ?? guides.claude);
+        const el = this.addMsg("ai", guides[backend]);
         el.classList.add("ga-error");
+        if (backend !== "gemini") {
+          const btn = document.createElement("button");
+          btn.className = "ga-chip";
+          btn.style.marginTop = "6px";
+          btn.textContent =
+            backend === "codex" ? "Sign in with ChatGPT" : "Open Claude sign-in";
+          btn.addEventListener("click", () => {
+            btn.disabled = true;
+            btn.textContent = "Waiting for sign-in…";
+            this.port?.postMessage({ type: "backend-login", backend });
+          });
+          el.appendChild(document.createElement("br"));
+          el.appendChild(btn);
+        }
         this.finish();
+      } else if (msg.type === "login-result") {
+        if (msg.ok === true) {
+          this.flashStatus("Signed in - ask again");
+        } else if (msg.ok === false) {
+          this.flashStatus("Sign-in did not complete");
+        }
+        for (const b of this.log.querySelectorAll("button.ga-chip[disabled]")) {
+          b.disabled = false;
+          b.textContent =
+            msg.backend === "codex"
+              ? "Sign in with ChatGPT"
+              : "Open Claude sign-in";
+        }
       }
     }
   }

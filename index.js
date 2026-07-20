@@ -533,6 +533,17 @@ function runChatGemini(prompt) {
     if (fullText.trim()) {
       rememberTurn(prompt, fullText.trim());
       toPanel({ type: "chat-done" });
+    } else if (/IneligibleTier|no longer supported/i.test(stderrTail)) {
+      // Google retired the Gemini CLI's free individual tier
+      // (verified live 2026-07-20); signing in cannot fix this one.
+      toPanel({
+        type: "chat-error",
+        message:
+          "Google has discontinued the Gemini CLI's free individual " +
+          "tier, so Google-account sign-in no longer works. A Gemini " +
+          "API key mode may come later; use Claude Code or Codex for " +
+          "now.",
+      });
     } else if (/auth|log ?in|credential|sign.?in|oauth/i.test(stderrTail)) {
       toPanel({ type: "chat-login-needed", backend: "gemini" });
     } else {
@@ -542,6 +553,58 @@ function runChatGemini(prompt) {
       });
     }
   });
+}
+
+// --- Sign-in from the panel ------------------------------------------
+// codex login does all its interaction in the browser, so a plain
+// spawn is a one-click sign-in. Claude's /login is an interactive TUI:
+// the best one-click is opening a ready terminal running the CLI.
+
+let loginChild;
+
+function runBackendLogin(backend) {
+  if (loginChild) return;
+  if (backend === "codex") {
+    const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_CODEX", "codex");
+    let child;
+    try {
+      child = spawn(cmd, [...preArgs, "login"], { windowsHide: true });
+    } catch (e) {
+      toPanel({ type: "login-result", backend, ok: false });
+      return;
+    }
+    loginChild = child;
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch (e) {}
+    }, CHAT_TIMEOUT_MS);
+    child.on("error", () => {
+      clearTimeout(timer);
+      loginChild = undefined;
+      toPanel({ type: "login-result", backend, ok: false });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      loginChild = undefined;
+      toPanel({ type: "login-result", backend, ok: code === 0 });
+      sendAgentStatus();
+    });
+    return;
+  }
+  if (backend === "claude") {
+    // Open a terminal already running the CLI; the user types /login.
+    const { cmd, preArgs } = resolveAgentCli();
+    try {
+      spawn("cmd.exe", ["/c", "start", "Claude sign-in", cmd, ...preArgs], {
+        windowsHide: true,
+        detached: true,
+      }).unref();
+      toPanel({ type: "login-result", backend, ok: null });
+    } catch (e) {
+      toPanel({ type: "login-result", backend, ok: false });
+    }
+  }
 }
 
 // --- Package lifecycle -----------------------------------------------
@@ -593,6 +656,8 @@ exports.addMessagePort = async function (port, senderId) {
       stopActiveChat();
       lastSessionId = undefined;
       transcript = [];
+    } else if (msg?.type === "backend-login") {
+      if (BACKENDS[msg.backend]) runBackendLogin(msg.backend);
     } else if (msg?.type === "set-backend") {
       if (BACKENDS[msg.backend]) {
         backendId = msg.backend;
