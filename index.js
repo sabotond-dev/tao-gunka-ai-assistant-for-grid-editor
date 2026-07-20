@@ -10,8 +10,9 @@
 // are the same shape and come later.
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 // The system prompt stays slim: role, honesty rules, and where the
 // real context lives. The agent reads GRID_CONTEXT.md (curated Grid
@@ -52,7 +53,7 @@ function buildSystemPrompt(profilesDir) {
 // at load; the panel toggle controls whether the agent may read them.
 function findProfilesDir() {
   const dir = path.join(
-    process.env.USERPROFILE ?? "",
+    os.homedir(),
     "Documents",
     "grid-userdata",
     "configs",
@@ -131,9 +132,10 @@ function rememberTurn(q, a) {
   persistSettings();
 }
 
-// npm-installed CLIs are .cmd shims, which Node refuses to spawn
-// directly - route them through cmd.exe. Overrides ending in .js run
-// under the current Node (tests).
+// npm-installed CLIs: on Windows they are .cmd shims Node refuses to
+// spawn directly (route through cmd.exe); on macOS and Linux they are
+// plain executables on PATH. Overrides ending in .js run under the
+// current Node (tests).
 function resolveNpmCli(overrideEnv, cmdName) {
   const override = process.env[overrideEnv];
   if (override) {
@@ -142,17 +144,27 @@ function resolveNpmCli(overrideEnv, cmdName) {
     }
     return { cmd: override, preArgs: [], found: true };
   }
-  const shim = path.join(process.env.APPDATA ?? "", "npm", `${cmdName}.cmd`);
-  if (fs.existsSync(shim)) {
-    return { cmd: "cmd.exe", preArgs: ["/c", shim], found: true };
+  if (process.platform === "win32") {
+    const shim = path.join(process.env.APPDATA ?? "", "npm", `${cmdName}.cmd`);
+    if (fs.existsSync(shim)) {
+      return { cmd: "cmd.exe", preArgs: ["/c", shim], found: true };
+    }
+    return { cmd: "cmd.exe", preArgs: ["/c", cmdName], found: false };
   }
-  return { cmd: "cmd.exe", preArgs: ["/c", cmdName], found: false };
+  const found =
+    spawnSync("which", [cmdName], { windowsHide: true }).status === 0;
+  return { cmd: cmdName, preArgs: [], found };
 }
 
 function backendAvailability() {
   const claudeResolved = resolveAgentCli();
+  let claude =
+    !!process.env.GRID_AGENT_CLI || claudeResolved.cmd !== "claude";
+  if (!claude && process.platform !== "win32") {
+    claude = spawnSync("which", ["claude"], { windowsHide: true }).status === 0;
+  }
   return {
-    claude: !!process.env.GRID_AGENT_CLI || claudeResolved.cmd !== "claude",
+    claude,
     codex: resolveNpmCli("GRID_AGENT_CODEX", "codex").found,
     gemini: resolveNpmCli("GRID_AGENT_GEMINI", "gemini").found,
     // Reachability is only knowable at call time; errors say so.
@@ -261,6 +273,14 @@ function resolveAgentCli() {
     return { cmd: override, preArgs: [] };
   }
 
+  if (process.platform !== "win32") {
+    // macOS / Linux: standalone installs land in ~/.local/bin, npm
+    // installs on PATH.
+    const local = path.join(os.homedir(), ".local", "bin", "claude");
+    if (fs.existsSync(local)) return { cmd: local, preArgs: [] };
+    return { cmd: "claude", preArgs: [] };
+  }
+
   const bases = [
     path.join(process.env.APPDATA ?? "", "Claude", "claude-code"),
   ];
@@ -284,7 +304,7 @@ function resolveAgentCli() {
       }
     }
   } catch (e) {
-    /* no Packages dir (non-Windows or no store apps) */
+    /* no Packages dir */
   }
 
   for (const base of bases) {
@@ -910,6 +930,12 @@ function runBackendLogin(backend) {
   }
   if (backend === "claude") {
     // Open a terminal already running the CLI; the user types /login.
+    // Windows-only convenience; elsewhere the panel guidance covers
+    // running the CLI manually.
+    if (process.platform !== "win32") {
+      toPanel({ type: "login-result", backend, ok: false });
+      return;
+    }
     const { cmd, preArgs } = resolveAgentCli();
     try {
       spawn("cmd.exe", ["/c", "start", "Claude sign-in", cmd, ...preArgs], {

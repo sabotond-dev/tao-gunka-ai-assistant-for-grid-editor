@@ -47,6 +47,11 @@ server of its own, and adds no cost beyond what you already run.
 3. Pick the agent in the dropdown under the chat. That is the whole
    setup.
 
+On Linux, run the Editor as the AppImage or deb build: a flatpak
+Editor is sandboxed away from the host's agent CLIs, so the CLI
+backends cannot reach them (the Local backend still works if the
+sandbox allows localhost networking).
+
 Gemini appears in the list but Google has discontinued the Gemini
 CLI's free individual tier, so its sign-in currently cannot work.
 
