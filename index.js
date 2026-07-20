@@ -13,26 +13,64 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-// A short capability brief so config answers are grounded in how Grid
-// actually works. The real feature ships a curated pack; the spike
-// proves the plumbing with a stub.
-const GRID_BRIEF = [
-  "You are the Grid Assistant inside Intech Studio's Grid Editor.",
-  "Grid is a modular MIDI controller: modules (BU16 buttons, EF44",
-  "encoders+faders, PBF4 pots+buttons+faders, VSN1 endless knob with",
-  "a 320x240 screen) snap together and are configured in the Grid",
-  "Editor by attaching action blocks to element events (Setup, Button,",
-  "Encoder, Endless, Draw, Timer). Blocks compile to Lua that runs on",
-  "the module. Useful Lua: self:bst() button state (fires on press AND",
-  "release, so edge-latch with a self variable), self:est()/epst()",
-  "encoder step around 64, gks() sends USB keystrokes, gps() routes to",
-  "editor packages, self:ldft/ldaf/ldrr/ldsw draw on the VSN1 screen.",
-  "Answer briefly and concretely. If unsure, say so.",
-].join(" ");
+// The system prompt stays slim: role, honesty rules, and where the
+// real context lives. The agent reads GRID_CONTEXT.md (curated Grid
+// reference, ships with the package) and the user's saved configs
+// on demand with its own file tools.
+function buildSystemPrompt(profilesDir) {
+  const parts = [
+    "You are the Grid Assistant inside Intech Studio's Grid Editor.",
+    "Before answering Grid API questions, read GRID_CONTEXT.md in the",
+    "working directory - it is the authoritative reference here.",
+  ];
+  if (profilesDir) {
+    parts.push(
+      `The user's saved Grid profiles, presets and configs are JSON`,
+      `files in "${profilesDir}" (each holds name, type, and the Lua`,
+      `of every event). When a question concerns the user's own setup,`,
+      `list and read the relevant files instead of asking the user to`,
+      `paste anything.`,
+    );
+  }
+  parts.push(
+    "You have no live view of connected hardware or the Editor UI -",
+    "say so when it matters. Answer briefly and concretely; when the",
+    "reference does not cover something, say you are unsure.",
+  );
+  return parts.join(" ");
+}
+
+// The user's saved configs (stable editor writes them here). Checked
+// at load; the panel toggle controls whether the agent may read them.
+function findProfilesDir() {
+  const dir = path.join(
+    process.env.USERPROFILE ?? "",
+    "Documents",
+    "grid-userdata",
+    "configs",
+  );
+  try {
+    return fs.statSync(dir).isDirectory() ? dir : undefined;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function countProfiles(dir) {
+  try {
+    return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+  } catch (e) {
+    return 0;
+  }
+}
+
+const CHAT_TIMEOUT_MS = 5 * 60 * 1000;
 
 let controller;
 let chatPort;
 let packageShutDown = false;
+let profilesDir;
+let shareProfiles = true;
 
 // --- Agent CLI resolution --------------------------------------------
 // The Claude desktop app ships versioned CLI builds under
@@ -136,21 +174,27 @@ function runChat(prompt) {
   delete env.CLAUDE_CODE_ENTRYPOINT;
   delete env.CLAUDE_CODE_SESSION_ID;
 
+  const withProfiles = shareProfiles && profilesDir;
+  const args = [
+    ...preArgs,
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    // Read-only file tools auto-approve so the agent can consult
+    // GRID_CONTEXT.md and the user's configs without permission stalls.
+    "--allowedTools",
+    "Read,Glob,Grep",
+    "--append-system-prompt",
+    buildSystemPrompt(withProfiles ? profilesDir : undefined),
+  ];
+  if (withProfiles) {
+    args.push("--add-dir", profilesDir);
+  }
+
   let child;
   try {
-    child = spawn(
-      cmd,
-      [
-        ...preArgs,
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--append-system-prompt",
-        GRID_BRIEF,
-      ],
-      { env, windowsHide: true, cwd: __dirname },
-    );
+    child = spawn(cmd, args, { env, windowsHide: true, cwd: __dirname });
   } catch (e) {
     toPanel({
       type: "chat-error",
@@ -160,6 +204,15 @@ function runChat(prompt) {
   }
   activeChild = child;
   toPanel({ type: "chat-start" });
+
+  // Agentic runs can wander; a hung CLI should not wedge the panel.
+  const killTimer = setTimeout(() => {
+    if (activeChild === child) {
+      stopActiveChat();
+      toPanel({ type: "chat-error", message: "Agent timed out (5 min)" });
+    }
+  }, CHAT_TIMEOUT_MS);
+  child.on("close", () => clearTimeout(killTimer));
 
   // The prompt goes over stdin: no shell, no quoting problems.
   child.stdin.write(prompt);
@@ -236,9 +289,20 @@ function runChat(prompt) {
 
 // --- Package lifecycle -----------------------------------------------
 
+function sendAgentStatus() {
+  toPanel({
+    type: "agent-status",
+    shareProfiles,
+    profilesFound: !!profilesDir,
+    profileCount: profilesDir ? countProfiles(profilesDir) : 0,
+  });
+}
+
 exports.loadPackage = async function (gridController, persistedData) {
   packageShutDown = false;
   controller = gridController;
+  shareProfiles = persistedData?.shareProfiles !== false;
+  profilesDir = findProfilesDir();
 };
 
 exports.unloadPackage = async function () {
@@ -257,9 +321,19 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "chat-stop") {
       stopActiveChat();
       toPanel({ type: "chat-done", stopped: true });
+    } else if (msg?.type === "set-share-profiles") {
+      shareProfiles = !!msg.enabled;
+      controller?.sendMessageToEditor({
+        type: "persist-data",
+        data: { shareProfiles },
+      });
+      sendAgentStatus();
+    } else if (msg?.type === "request-status") {
+      sendAgentStatus();
     }
   });
   port.start();
+  sendAgentStatus();
 };
 
 // No gps actions in the spike; the package is panel-only.

@@ -50,10 +50,18 @@
           <button class="ga-send">Send</button>
         </div>
         <div class="ga-note ga-status"></div>
+        <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
+          <input type="checkbox" class="ga-share" checked
+            style="accent-color:#14ce96;flex:none;" />
+          <span class="ga-share-label">Let the agent read my saved
+            profiles and presets</span>
+        </label>
         <div class="ga-note">
           Answers come from your own agent. The package runs your
           installed Claude Code headless: your subscription, your
-          machine, no API key stored anywhere.
+          machine, no API key stored anywhere. It reads the built-in
+          Grid reference, and with the toggle above, your saved
+          configs in <span class="ga-code">grid-userdata</span>.
         </div>`;
       this.appendChild(root);
 
@@ -61,9 +69,17 @@
       this.input = root.querySelector(".ga-input");
       this.sendBtn = root.querySelector(".ga-send");
       this.status = root.querySelector(".ga-status");
+      this.shareToggle = root.querySelector(".ga-share");
+      this.shareLabel = root.querySelector(".ga-share-label");
       this.busy = false;
       this.current = null;
 
+      this.shareToggle.addEventListener("change", () => {
+        this.port?.postMessage({
+          type: "set-share-profiles",
+          enabled: this.shareToggle.checked,
+        });
+      });
       this.sendBtn.addEventListener("click", () => this.send());
       this.input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
@@ -122,6 +138,14 @@
       } else if (msg.type === "chat-error") {
         this.addMsg("ga-ai", msg.message);
         this.finish();
+      } else if (msg.type === "agent-status") {
+        if (this.shareToggle) this.shareToggle.checked = !!msg.shareProfiles;
+        if (this.shareLabel) {
+          this.shareLabel.textContent = msg.profilesFound
+            ? `Let the agent read my saved profiles and presets ` +
+              `(${msg.profileCount} found)`
+            : "No saved profiles found in grid-userdata";
+        }
       } else if (msg.type === "chat-login-needed") {
         this.addMsg(
           "ga-ai",
