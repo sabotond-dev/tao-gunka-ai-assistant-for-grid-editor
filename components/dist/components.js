@@ -111,6 +111,31 @@
     .ga-backend:focus { outline:none;
       border-color:rgba(${ACCENT},0.6); }
 
+    /* Block proposal cards -------------------------------------------- */
+    .ga-card { border:1px solid rgba(${ACCENT},0.4); border-radius:8px;
+      padding:8px 10px; margin:6px 0 0 11px; max-width:100%;
+      background:rgba(${ACCENT},0.06); }
+    .ga-card-name { font-weight:600; margin-bottom:2px; }
+    .ga-card-where { font-size:11px;
+      color:var(--foreground-muted,#9d9d9d); margin-bottom:6px; }
+    .ga-card-btn { padding:5px 12px; border-radius:6px; cursor:pointer;
+      font-size:11px; font-weight:600; color:#0d1f19;
+      background:rgba(${ACCENT},0.85); border:none; }
+    .ga-card-btn:hover { background:rgba(${ACCENT},1); }
+    .ga-card-btn[disabled] { background:rgba(255,255,255,0.12);
+      color:var(--foreground-muted,#9d9d9d); cursor:default;
+      font-weight:400; }
+    .ga-proposal { font-size:11px; font-style:italic;
+      color:var(--foreground-muted,#9d9d9d); margin:4px 0; }
+    .ga-blocks-row { display:flex; justify-content:space-between;
+      align-items:center; gap:6px; }
+    .ga-blocks-x { padding:1px 7px; border-radius:5px; cursor:pointer;
+      font-size:10px; color:var(--foreground-muted,#9d9d9d);
+      background:none; border:1px solid rgba(255,255,255,0.14);
+      flex:none; }
+    .ga-blocks-x:hover { border-color:rgba(224,80,80,0.6);
+      color:var(--foreground,#ededed); }
+
     /* Footer ----------------------------------------------------------- */
     .ga-footer { display:flex; flex-direction:column; gap:6px;
       border-top:1px solid rgba(255,255,255,0.1); padding-top:8px; }
@@ -127,10 +152,17 @@
 
   function renderMarkdown(raw) {
     const blocks = [];
-    let text = raw.replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (m, body) => {
-      blocks.push(`<pre>${esc(body.replace(/\n$/, ""))}</pre>`);
-      return `\u0000${blocks.length - 1}\u0000`;
-    });
+    let text = raw.replace(
+      /```([^\n]*)\n([\s\S]*?)(```|$)/g,
+      (m, lang, body) => {
+        blocks.push(
+          /^grid-block/.test(lang.trim())
+            ? `<div class="ga-proposal">Block proposal - Apply card below</div>`
+            : `<pre>${esc(body.replace(/\n$/, ""))}</pre>`,
+        );
+        return `\u0000${blocks.length - 1}\u0000`;
+      },
+    );
     text = esc(text)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
@@ -142,9 +174,49 @@
 
   const STARTERS = [
     "What do my saved configs do?",
-    "Write Lua for an edge-latched button",
+    "Build me a screen readout for a fader",
     "Why does my knob feel too coarse?",
   ];
+
+  // Config UI for agent-created blocks: nothing to configure, the
+  // block carries the Lua the agent wrote. Same editor handshake as
+  // the other packages' components (deferred dispatch, re-fired per
+  // connect, so pasted blocks receive their config).
+  class GridAgentBlock extends HTMLElement {
+    connectedCallback() {
+      if (!this._built) {
+        this._built = true;
+        const note = document.createElement("div");
+        note.style.cssText =
+          "font-size:11px;line-height:1.45;color:var(--foreground-muted,#9d9d9d);";
+        note.textContent =
+          "Created by the Grid Assistant. The Lua below is the block; " +
+          "edit it in the code view if you want to tweak it.";
+        this.appendChild(note);
+        this.preEl = document.createElement("pre");
+        this.preEl.style.cssText =
+          "background:rgba(0,0,0,0.35);border-radius:6px;padding:6px 8px;" +
+          "margin-top:6px;overflow-x:auto;font-family:Consolas,monospace;" +
+          "font-size:10.5px;white-space:pre-wrap;word-break:break-word;" +
+          "user-select:text;color:var(--foreground,#ededed);";
+        this.appendChild(this.preEl);
+      }
+      setTimeout(() => {
+        if (!this.isConnected) return;
+        this.dispatchEvent(
+          new CustomEvent("updateConfigHandler", {
+            bubbles: true,
+            detail: {
+              handler: (config) => {
+                this._script = String(config?.script ?? "");
+                if (this.preEl) this.preEl.textContent = this._script;
+              },
+            },
+          }),
+        );
+      }, 0);
+    }
+  }
 
   class GridAgentChat extends HTMLElement {
     connectedCallback() {
@@ -183,6 +255,11 @@
           <button class="ga-new">New chat</button>
         </div>
         <div class="ga-footer">
+          <div class="ga-blocks" style="display:none;">
+            <div class="ga-note" style="font-weight:600;">Assistant blocks
+              in your palette</div>
+            <div class="ga-blocks-list"></div>
+          </div>
           <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
             <input type="checkbox" class="ga-share" checked
               style="accent-color:rgb(${ACCENT});flex:none;" />
@@ -209,8 +286,12 @@
       this.shareToggle = root.querySelector(".ga-share");
       this.shareLabel = root.querySelector(".ga-share-label");
       this.backendSel = root.querySelector(".ga-backend");
+      this.blocksBox = root.querySelector(".ga-blocks");
+      this.blocksList = root.querySelector(".ga-blocks-list");
       this.busy = false;
       this.current = null;
+      this.cardSeq = 0;
+      this.pendingCards = new Map();
 
       this.backendSel.addEventListener("change", () => {
         this.port?.postMessage({
@@ -331,6 +412,71 @@
       return el;
     }
 
+    // Turn grid-block fences in a finished answer into Apply cards.
+    addProposalCards(raw, afterEl) {
+      const re = /```grid-block[^\n]*\n([\s\S]*?)```/g;
+      let m;
+      let anchor = afterEl;
+      while ((m = re.exec(raw))) {
+        let block;
+        try {
+          block = JSON.parse(m[1]);
+        } catch (e) {
+          continue;
+        }
+        if (!block?.name || !block?.lua) continue;
+        const card = document.createElement("div");
+        card.className = "ga-card";
+        const name = document.createElement("div");
+        name.className = "ga-card-name";
+        name.textContent = block.name;
+        card.appendChild(name);
+        if (block.where) {
+          const where = document.createElement("div");
+          where.className = "ga-card-where";
+          where.textContent = `Goes on: ${block.where}`;
+          card.appendChild(where);
+        }
+        const btn = document.createElement("button");
+        btn.className = "ga-card-btn";
+        btn.textContent = "Add to block palette";
+        btn.addEventListener("click", () => {
+          btn.disabled = true;
+          btn.textContent = "Creating…";
+          const requestId = ++this.cardSeq;
+          this.pendingCards.set(requestId, card);
+          this.port?.postMessage({ type: "create-block", requestId, block });
+        });
+        card.appendChild(btn);
+        anchor.after(card);
+        anchor = card;
+      }
+      this.scrollDown(true);
+    }
+
+    renderBlocksList(blocks) {
+      if (!this.blocksBox) return;
+      this.blocksBox.style.display = blocks?.length ? "" : "none";
+      if (!blocks?.length) return;
+      this.blocksList.textContent = "";
+      for (const b of blocks) {
+        const row = document.createElement("div");
+        row.className = "ga-note ga-blocks-row";
+        const label = document.createElement("span");
+        label.textContent = b.name;
+        const x = document.createElement("button");
+        x.className = "ga-blocks-x";
+        x.textContent = "✕";
+        x.title = "Remove from palette";
+        x.addEventListener("click", () => {
+          this.port?.postMessage({ type: "delete-block", short: b.short });
+        });
+        row.appendChild(label);
+        row.appendChild(x);
+        this.blocksList.appendChild(row);
+      }
+    }
+
     send() {
       const prompt = this.input.value.trim();
       if (!prompt || this.busy) return;
@@ -365,9 +511,12 @@
         this.current.innerHTML = renderMarkdown(this.currentRaw);
         this.scrollDown(false);
       } else if (msg.type === "chat-done") {
+        const raw = this.currentRaw;
+        const anchor = this.current?.parentElement;
         this.finish(
           msg.stopped ? "Stopped." : msg.seconds ? `${msg.seconds}s` : "",
         );
+        if (raw && anchor) this.addProposalCards(raw, anchor);
       } else if (msg.type === "chat-error") {
         const el = this.addMsg("ai", msg.message);
         el.classList.add("ga-error");
@@ -380,6 +529,7 @@
               `(${msg.profileCount} found)`
             : "No saved profiles found in grid-userdata";
         }
+        this.renderBlocksList(msg.blocks);
         if (this.backendSel) {
           if (msg.backend) this.backendSel.value = msg.backend;
           const av = msg.backends ?? {};
@@ -422,6 +572,25 @@
           el.appendChild(btn);
         }
         this.finish();
+      } else if (msg.type === "block-created") {
+        const card = this.pendingCards.get(msg.requestId);
+        this.pendingCards.delete(msg.requestId);
+        if (card) {
+          const btn = card.querySelector(".ga-card-btn");
+          if (msg.ok) {
+            btn.disabled = true;
+            btn.textContent = "Added to palette";
+            const hint = document.createElement("div");
+            hint.className = "ga-card-where";
+            hint.style.marginTop = "6px";
+            hint.textContent =
+              "Drag it from the block list" +
+              (msg.where ? ` onto ${msg.where}.` : ".");
+            card.appendChild(hint);
+          } else {
+            btn.textContent = "Could not create";
+          }
+        }
       } else if (msg.type === "login-result") {
         if (msg.ok === true) {
           this.flashStatus("Signed in - ask again");
@@ -441,5 +610,8 @@
 
   if (!customElements.get("grid-agent-chat")) {
     customElements.define("grid-agent-chat", GridAgentChat);
+  }
+  if (!customElements.get("grid-agent-block")) {
+    customElements.define("grid-agent-block", GridAgentBlock);
   }
 })();

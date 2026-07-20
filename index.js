@@ -38,8 +38,12 @@ function buildSystemPrompt(profilesDir) {
   }
   parts.push(
     "You have no live view of connected hardware or the Editor UI -",
-    "say so when it matters. Answer briefly and concretely; when the",
-    "reference does not cover something, say you are unsure.",
+    "say so when it matters. When the user asks you to BUILD or",
+    "CREATE something (a config, a mapping, a screen), propose real",
+    "action blocks using the grid-block JSON protocol described in",
+    "GRID_CONTEXT.md under 'Creating action blocks'. Answer briefly",
+    "and concretely; when the reference does not cover something, say",
+    "you are unsure.",
   );
   return parts.join(" ");
 }
@@ -588,6 +592,133 @@ function runChatGemini(prompt) {
   });
 }
 
+// --- Agent-created action blocks -------------------------------------
+// The one config-write path stable exposes: add-action registers new
+// block types in the editor's left palette, and the user's drag onto
+// an element is the native config commit. The agent proposes a block
+// as JSON, the panel shows an Apply card, one click mints it here.
+// Definitions persist and re-register on every load.
+
+let agentBlocks = []; // [{short, name, description, where, lua}]
+let actionIdByShort = new Map();
+let nextActionId = 0;
+let nextBlockNum = 1;
+
+function agentBlockIcon() {
+  return (
+    '<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+    'xmlns="http://www.w3.org/2000/svg">' +
+    '<path d="M12 3v4M5 10l3 2M19 10l-3 2"/>' +
+    '<rect x="7" y="12" width="10" height="8" rx="2"/></svg>'
+  );
+}
+
+function registerAgentBlock(block) {
+  const actionId = nextActionId++;
+  actionIdByShort.set(block.short, actionId);
+  controller?.sendMessageToEditor({
+    type: "add-action",
+    info: {
+      actionId,
+      short: block.short,
+      displayName: block.name,
+      rendering: "standard",
+      category: "agent",
+      color: "#14CE96",
+      icon: agentBlockIcon(),
+      blockIcon: agentBlockIcon(),
+      selectable: true,
+      movable: true,
+      hideIcon: false,
+      type: "single",
+      toggleable: true,
+      defaultLua: block.lua,
+      actionComponent: "grid-agent-block",
+    },
+  });
+}
+
+function sanitizeBlock(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const name = String(raw.name ?? "").trim().slice(0, 40);
+  const lua = String(raw.lua ?? "").trim().slice(0, 2000);
+  if (!name || !lua) return undefined;
+  return {
+    short: `xga${nextBlockNum++}`,
+    name,
+    description: String(raw.description ?? "").trim().slice(0, 300),
+    where: String(raw.where ?? "").trim().slice(0, 120),
+    lua,
+  };
+}
+
+function persistBlocks() {
+  persistSettings();
+}
+
+function createAgentBlock(raw) {
+  const block = sanitizeBlock(raw);
+  if (!block) return undefined;
+  agentBlocks.push(block);
+  registerAgentBlock(block);
+  persistBlocks();
+  controller?.sendMessageToEditor({
+    type: "show-message",
+    message: `New block "${block.name}" added - drag it from the block list` +
+      (block.where ? ` onto ${block.where}` : ""),
+    messageType: "success",
+  });
+  return block;
+}
+
+function deleteAgentBlock(short) {
+  const idx = agentBlocks.findIndex((b) => b.short === short);
+  if (idx < 0) return;
+  agentBlocks.splice(idx, 1);
+  const actionId = actionIdByShort.get(short);
+  if (actionId !== undefined) {
+    controller?.sendMessageToEditor({ type: "remove-action", actionId });
+    actionIdByShort.delete(short);
+  }
+  persistBlocks();
+}
+
+// --- Value relay ------------------------------------------------------
+// Generated source blocks call
+//   gps("package-grid-agent", "relay", "<key>", value)
+// and the package broadcasts the value to every module as the Lua
+// global ga_<key>, throttled per key. Display blocks read the global
+// from inside their Draw event. This is the Premiere Display pattern,
+// generalized.
+
+const RELAY_MIN_MS = 100;
+const relayState = new Map(); // key -> {pending, timer, last}
+
+function relayValue(key, value) {
+  const safeKey = String(key)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "")
+    .slice(0, 12);
+  if (!safeKey || !isFinite(value)) return;
+  let state = relayState.get(safeKey);
+  if (!state) {
+    state = {};
+    relayState.set(safeKey, state);
+  }
+  state.pending = value;
+  if (state.timer) return;
+  state.timer = setTimeout(() => {
+    state.timer = undefined;
+    if (state.pending === state.last) return;
+    state.last = state.pending;
+    controller?.sendMessageToEditor({
+      type: "execute-lua-script",
+      script: `ga_${safeKey}=${Number(state.pending)}`,
+    });
+  }, RELAY_MIN_MS);
+}
+
 // --- Sign-in from the panel ------------------------------------------
 // codex login does all its interaction in the browser, so a plain
 // spawn is a one-click sign-in. Claude's /login is an interactive TUI:
@@ -650,13 +781,19 @@ function sendAgentStatus() {
     profileCount: profilesDir ? countProfiles(profilesDir) : 0,
     backend: backendId,
     backends: backendAvailability(),
+    blocks: agentBlocks.map((b) => ({ short: b.short, name: b.name })),
   });
 }
 
 function persistSettings() {
   controller?.sendMessageToEditor({
     type: "persist-data",
-    data: { shareProfiles, backend: backendId },
+    data: {
+      shareProfiles,
+      backend: backendId,
+      blocks: agentBlocks,
+      nextBlockNum,
+    },
   });
 }
 
@@ -665,6 +802,13 @@ exports.loadPackage = async function (gridController, persistedData) {
   controller = gridController;
   shareProfiles = persistedData?.shareProfiles !== false;
   if (BACKENDS[persistedData?.backend]) backendId = persistedData.backend;
+  if (Array.isArray(persistedData?.blocks)) {
+    agentBlocks = persistedData.blocks.filter(
+      (b) => b && b.short && b.name && b.lua,
+    );
+  }
+  nextBlockNum = Number(persistedData?.nextBlockNum) || agentBlocks.length + 1;
+  for (const block of agentBlocks) registerAgentBlock(block);
   profilesDir = findProfilesDir();
   writeContextFiles();
 };
@@ -672,6 +816,15 @@ exports.loadPackage = async function (gridController, persistedData) {
 exports.unloadPackage = async function () {
   packageShutDown = true;
   stopActiveChat();
+  for (const actionId of actionIdByShort.values()) {
+    controller?.sendMessageToEditor({ type: "remove-action", actionId });
+  }
+  actionIdByShort.clear();
+  nextActionId = 0;
+  for (const state of relayState.values()) {
+    if (state.timer) clearTimeout(state.timer);
+  }
+  relayState.clear();
   removeConfigMirror();
   chatPort?.close();
 };
@@ -692,6 +845,20 @@ exports.addMessagePort = async function (port, senderId) {
       transcript = [];
     } else if (msg?.type === "backend-login") {
       if (BACKENDS[msg.backend]) runBackendLogin(msg.backend);
+    } else if (msg?.type === "create-block") {
+      const block = createAgentBlock(msg.block);
+      toPanel({
+        type: "block-created",
+        requestId: msg.requestId,
+        ok: !!block,
+        short: block?.short,
+        name: block?.name,
+        where: block?.where,
+      });
+      sendAgentStatus();
+    } else if (msg?.type === "delete-block") {
+      deleteAgentBlock(String(msg.short));
+      sendAgentStatus();
     } else if (msg?.type === "set-backend") {
       if (BACKENDS[msg.backend]) {
         backendId = msg.backend;
@@ -712,5 +879,11 @@ exports.addMessagePort = async function (port, senderId) {
   sendAgentStatus();
 };
 
-// No gps actions in the spike; the package is panel-only.
-exports.sendMessage = async function () {};
+// gps("package-grid-agent", "relay", key, value) from generated
+// source blocks lands here.
+exports.sendMessage = async function (args) {
+  if (!Array.isArray(args)) return;
+  if (args[0] === "relay") {
+    relayValue(args[1], Number(args[2]));
+  }
+};

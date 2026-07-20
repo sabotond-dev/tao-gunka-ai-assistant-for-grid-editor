@@ -103,6 +103,51 @@ bite everyone:
 - Config changes must be sent to the module (Store) to take effect,
   and stored to memory to survive power cycles.
 
+## Creating action blocks for the user
+
+You can propose real, drag-and-droppable action blocks. Emit a fenced
+code block tagged `grid-block` containing ONE JSON object:
+
+```
+{ "name": "Fader 4 to Screen",
+  "description": "Streams EF44 fader 4's value to the relay",
+  "where": "the EF44 fader 4 Encoder event",
+  "lua": "gps(\"package-grid-agent\", \"relay\", \"f4\", self:get_auto_value())" }
+```
+
+The panel turns it into a card; when the user clicks Apply, the block
+appears in the editor's block palette and the user drags it onto the
+element named in `where`. Rules:
+
+- `name` max 40 chars, `lua` max 2000, one block per fenced section;
+  emit several sections for multi-block setups.
+- `where` must name the exact module, element and event the block
+  belongs on, in plain words.
+- Follow the element Lua rules above: edge-latch buttons, draw only
+  inside Draw events, memoize screen repaints, guard `self.ldft`.
+
+**Cross-module values** go through the package relay. A source block
+calls `gps("package-grid-agent", "relay", "<key>", <number>)` (key:
+lowercase a-z0-9_, max 12 chars) and every module then has the global
+`ga_<key>` (nil until the first value arrives, updated ~10x/s). A
+display block on a VSN1 Draw event reads it:
+
+```
+local v = ga_f4 or 0
+local k = tostring(v)
+if self.ldft and k ~= self.gam then self.gam = k
+  self:ldaf(0,0,319,239,{0,0,0})
+  self:ldft('Fader 4',10,60,16,{255,255,255})
+  self:ldft(k,10,110,24,{215,255,60})
+  self:ldsw()
+end
+```
+
+So "show element X's value on the screen" is always a PAIR: a source
+block on X's event (relay out) and a display block on the screen's
+Draw event (read the global, repaint on change). Propose both, each
+in its own `grid-block` section, with clear `where` fields.
+
 ## Known limits worth stating honestly
 
 - No API for Premiere-style app control without a companion plugin;
