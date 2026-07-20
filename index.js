@@ -143,11 +143,45 @@ function backendAvailability() {
   };
 }
 
+// Codex's read-only sandbox cannot leave the workspace, so the user's
+// configs are mirrored into a folder beside the package before each
+// Codex question - same data Claude reads via --add-dir, no wider
+// grant. Toggling sharing off deletes the mirror.
+const CONFIG_MIRROR = path.join(__dirname, ".user-configs");
+
+function syncConfigMirror() {
+  if (!shareProfiles || !profilesDir) return undefined;
+  try {
+    fs.rmSync(CONFIG_MIRROR, { recursive: true, force: true });
+    fs.mkdirSync(CONFIG_MIRROR, { recursive: true });
+    for (const f of fs.readdirSync(profilesDir)) {
+      if (f.endsWith(".json")) {
+        fs.copyFileSync(
+          path.join(profilesDir, f),
+          path.join(CONFIG_MIRROR, f),
+        );
+      }
+    }
+    return CONFIG_MIRROR;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function removeConfigMirror() {
+  try {
+    fs.rmSync(CONFIG_MIRROR, { recursive: true, force: true });
+  } catch (e) {}
+}
+
 // Codex and Gemini read their instructions from AGENTS.md / GEMINI.md
 // in the working directory - the same brief Claude gets as a system
-// prompt, kept fresh whenever the profile toggle changes.
+// prompt, kept fresh whenever the profile toggle changes. Their
+// configs path is the in-workspace mirror.
 function writeContextFiles() {
-  const brief = buildSystemPrompt(shareProfiles ? profilesDir : undefined);
+  const brief = buildSystemPrompt(
+    shareProfiles && profilesDir ? CONFIG_MIRROR : undefined,
+  );
   for (const name of ["AGENTS.md", "GEMINI.md"]) {
     try {
       fs.writeFileSync(path.join(__dirname, name), brief + "\n");
@@ -401,6 +435,7 @@ function runChatClaude(prompt, isRetry) {
 // so AGENTS.md and the configs stay reachable.
 function runChatCodex(prompt) {
   stopActiveChat();
+  syncConfigMirror();
   const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_CODEX", "codex");
   const outFile = path.join(
     require("os").tmpdir(),
@@ -479,6 +514,7 @@ function runChatCodex(prompt) {
 // user text ever passes through cmd.exe argv.
 function runChatGemini(prompt) {
   stopActiveChat();
+  syncConfigMirror(); // in-workspace mirror, same as codex
   const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_GEMINI", "gemini");
   const args = [
     ...preArgs,
@@ -489,9 +525,6 @@ function runChatGemini(prompt) {
     "-o",
     "text",
   ];
-  if (shareProfiles && profilesDir) {
-    args.push("--include-directories", profilesDir);
-  }
   let child;
   try {
     child = spawn(cmd, args, { windowsHide: true, cwd: __dirname });
@@ -639,6 +672,7 @@ exports.loadPackage = async function (gridController, persistedData) {
 exports.unloadPackage = async function () {
   packageShutDown = true;
   stopActiveChat();
+  removeConfigMirror();
   chatPort?.close();
 };
 
@@ -667,6 +701,7 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "set-share-profiles") {
       shareProfiles = !!msg.enabled;
       persistSettings();
+      if (!shareProfiles) removeConfigMirror();
       writeContextFiles();
       sendAgentStatus();
     } else if (msg?.type === "request-status") {
