@@ -29,7 +29,37 @@
       color:var(--foreground-muted,#9d9d9d); }
     .ga-code { font-family:Consolas,monospace; font-size:10.5px;
       color:var(--foreground,#ededed); }
+    .ga-msg pre { background:rgba(0,0,0,0.35); border-radius:6px;
+      padding:6px 8px; margin:4px 0; overflow-x:auto;
+      font-family:Consolas,monospace; font-size:10.5px; }
+    .ga-msg code { font-family:Consolas,monospace; font-size:10.5px;
+      background:rgba(0,0,0,0.3); border-radius:3px; padding:0 3px; }
+    .ga-new { padding:6px 10px; border-radius:6px; cursor:pointer;
+      font-size:11px; color:var(--foreground-muted,#9d9d9d);
+      background:none; border:1px solid rgba(255,255,255,0.14);
+      flex:none; }
   `;
+
+  // Markdown-lite for assistant messages: escape everything first,
+  // then bring back the handful of shapes the agent actually uses.
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function renderMarkdown(raw) {
+    const blocks = [];
+    let text = raw.replace(/```[^\n]*\n([\s\S]*?)(```|$)/g, (m, body) => {
+      blocks.push(`<pre>${esc(body.replace(/\n$/, ""))}</pre>`);
+      return `\u0000${blocks.length - 1}\u0000`;
+    });
+    text = esc(text)
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+      .replace(/^#{1,4} (.*)$/gm, "<b>$1</b>")
+      .replace(/^[-*] /gm, "• ");
+    text = text.replace(/\u0000(\d+)\u0000/g, (m, i) => blocks[Number(i)]);
+    return text;
+  }
 
   class GridAgentChat extends HTMLElement {
     connectedCallback() {
@@ -49,7 +79,10 @@
             placeholder="Ask about your Grid setup…"></textarea>
           <button class="ga-send">Send</button>
         </div>
-        <div class="ga-note ga-status"></div>
+        <div class="ga-row" style="justify-content:space-between;align-items:center;">
+          <div class="ga-note ga-status"></div>
+          <button class="ga-new">New chat</button>
+        </div>
         <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
           <input type="checkbox" class="ga-share" checked
             style="accent-color:#14ce96;flex:none;" />
@@ -80,7 +113,18 @@
           enabled: this.shareToggle.checked,
         });
       });
-      this.sendBtn.addEventListener("click", () => this.send());
+      root.querySelector(".ga-new").addEventListener("click", () => {
+        this.port?.postMessage({ type: "chat-new" });
+        this.log.textContent = "";
+        this.finish("New conversation.");
+      });
+      this.sendBtn.addEventListener("click", () => {
+        if (this.busy) {
+          this.port?.postMessage({ type: "chat-stop" });
+        } else {
+          this.send();
+        }
+      });
       this.input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -111,9 +155,10 @@
       if (!prompt || this.busy) return;
       this.input.value = "";
       this.busy = true;
-      this.sendBtn.textContent = "…";
+      this.sendBtn.textContent = "Stop";
       this.addMsg("ga-user", prompt);
       this.current = null;
+      this.currentRaw = "";
       this.status.textContent = "Thinking…";
       this.port?.postMessage({ type: "chat", prompt });
     }
@@ -123,13 +168,15 @@
       this.sendBtn.textContent = "Send";
       this.status.textContent = statusText ?? "";
       this.current = null;
+      this.currentRaw = "";
     }
 
     onPortMessage(msg) {
       if (!msg) return;
       if (msg.type === "chat-chunk") {
         if (!this.current) this.current = this.addMsg("ga-ai", "");
-        this.current.textContent += msg.text;
+        this.currentRaw = (this.currentRaw ?? "") + msg.text;
+        this.current.innerHTML = renderMarkdown(this.currentRaw);
         this.log.scrollTop = this.log.scrollHeight;
       } else if (msg.type === "chat-done") {
         this.finish(

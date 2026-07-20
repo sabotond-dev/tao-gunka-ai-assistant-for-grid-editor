@@ -76,6 +76,12 @@ let packageShutDown = false;
 let profilesDir;
 let shareProfiles = true;
 
+// Conversation continuity: the CLI names its session in the stream
+// events; passing it back with --resume turns one-shot questions into
+// a conversation. Cleared by the panel's New chat, or when a resume
+// fails (old sessions expire).
+let lastSessionId;
+
 // --- Agent CLI resolution --------------------------------------------
 // The Claude desktop app ships versioned CLI builds under
 // %APPDATA%\Claude\claude-code\<version>\claude.exe; a standalone
@@ -167,7 +173,7 @@ function stopActiveChat() {
   }
 }
 
-function runChat(prompt) {
+function runChat(prompt, isRetry) {
   stopActiveChat();
   const { cmd, preArgs } = resolveAgentCli();
 
@@ -194,6 +200,10 @@ function runChat(prompt) {
   ];
   if (withProfiles) {
     args.push("--add-dir", profilesDir);
+  }
+  const resumingFrom = lastSessionId;
+  if (resumingFrom) {
+    args.push("--resume", resumingFrom);
   }
 
   let child;
@@ -225,6 +235,7 @@ function runChat(prompt) {
   let buffer = "";
   let stderrTail = "";
   let sawText = false;
+  let seenSessionId;
 
   child.stdout.on("data", (data) => {
     buffer += data.toString();
@@ -238,6 +249,7 @@ function runChat(prompt) {
       } catch (e) {
         continue;
       }
+      if (event.session_id) seenSessionId = event.session_id;
       if (event.type === "assistant") {
         const parts = event.message?.content ?? [];
         for (const part of parts) {
@@ -254,6 +266,7 @@ function runChat(prompt) {
           }
         }
       } else if (event.type === "result") {
+        if (seenSessionId) lastSessionId = seenSessionId;
         toPanel({
           type: "chat-done",
           seconds: Math.round((event.duration_ms ?? 0) / 100) / 10,
@@ -282,12 +295,19 @@ function runChat(prompt) {
     const tail = stderrTail.trim();
     if (/log ?in|logged in/i.test(tail)) {
       toPanel({ type: "chat-login-needed" });
-    } else {
-      toPanel({
-        type: "chat-error",
-        message: tail || `Agent exited with code ${code} and said nothing`,
-      });
+      return;
     }
+    // A dead --resume target (expired or cleaned-up session) should
+    // degrade to a fresh conversation, not an error.
+    if (resumingFrom && !isRetry) {
+      lastSessionId = undefined;
+      runChat(prompt, true);
+      return;
+    }
+    toPanel({
+      type: "chat-error",
+      message: tail || `Agent exited with code ${code} and said nothing`,
+    });
   });
 }
 
@@ -325,6 +345,9 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "chat-stop") {
       stopActiveChat();
       toPanel({ type: "chat-done", stopped: true });
+    } else if (msg?.type === "chat-new") {
+      stopActiveChat();
+      lastSessionId = undefined;
     } else if (msg?.type === "set-share-profiles") {
       shareProfiles = !!msg.enabled;
       controller?.sendMessageToEditor({
