@@ -4,8 +4,7 @@ An AI assistant that lives inside the Grid Editor and actually knows
 Grid. Ask why your button fires twice and it answers with the
 edge-latch fix. Ask what your saved profile does and it reads the
 file. Describe a block you want and it builds one you can add to your
-config. The name honors a stone-hearted boss from a beloved retro
-MMO; like him, it sits quietly in its cave until you come asking.
+config.
 
 The answers come from your own agent, running on your machine:
 Claude Code on your Claude subscription, Codex on your ChatGPT
@@ -81,6 +80,15 @@ small relay: source blocks report through the package, and every
 module sees the value as a `ga_<key>` Lua global for display blocks
 to read. The full reference the agents work from is
 [GRID_CONTEXT.md](GRID_CONTEXT.md).
+
+## The name
+
+Tao Gunka is the stone boss of Ragnarok Online's Comodo caves, best
+remembered for a card that doubled your health and turned whoever
+found it into the party's wall. This assistant borrows the name in
+tribute: a patient stone giant that sits quietly in its cave until
+you come asking, and makes your setup considerably harder to kill.
+The pixel sprite is our own homage, drawn from scratch.
 
 ## Development
 
