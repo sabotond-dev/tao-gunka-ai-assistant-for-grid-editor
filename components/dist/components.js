@@ -103,6 +103,13 @@
       flex:none; }
     .ga-new:hover { color:var(--foreground,#ededed);
       border-color:rgba(255,255,255,0.3); }
+    .ga-backend { padding:4px 6px; border-radius:6px; cursor:pointer;
+      font-size:11px; color:var(--foreground,#ededed);
+      background:rgba(0,0,0,0.25);
+      border:1px solid rgba(255,255,255,0.14); flex:none;
+      max-width:150px; }
+    .ga-backend:focus { outline:none;
+      border-color:rgba(${ACCENT},0.6); }
 
     /* Footer ----------------------------------------------------------- */
     .ga-footer { display:flex; flex-direction:column; gap:6px;
@@ -167,7 +174,12 @@
           <button class="ga-send">Send</button>
         </div>
         <div class="ga-meta">
-          <div class="ga-status"></div>
+          <select class="ga-backend" title="Which agent answers">
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex (ChatGPT)</option>
+            <option value="gemini">Gemini</option>
+          </select>
+          <div class="ga-status" style="flex:1;margin:0 8px;"></div>
           <button class="ga-new">New chat</button>
         </div>
         <div class="ga-footer">
@@ -178,9 +190,11 @@
               profiles and presets</span>
           </label>
           <div class="ga-note">
-            Runs your installed Claude Code headless: your subscription,
-            your machine, no API key stored anywhere. Reads the built-in
-            Grid reference and, with the toggle, your saved configs in
+            Answers come from your own agent, run headless on your
+            machine: Claude Code on your subscription, Codex on your
+            ChatGPT account, or Gemini on your Google account. No API
+            key stored anywhere. Every agent reads the built-in Grid
+            reference and, with the toggle, your saved configs in
             <span class="ga-code">grid-userdata</span>. Hover a reply to
             copy it; click a code block to copy the code.
           </div>
@@ -194,8 +208,16 @@
       this.status = root.querySelector(".ga-status");
       this.shareToggle = root.querySelector(".ga-share");
       this.shareLabel = root.querySelector(".ga-share-label");
+      this.backendSel = root.querySelector(".ga-backend");
       this.busy = false;
       this.current = null;
+
+      this.backendSel.addEventListener("change", () => {
+        this.port?.postMessage({
+          type: "set-backend",
+          backend: this.backendSel.value,
+        });
+      });
 
       for (const chip of root.querySelectorAll(".ga-chip")) {
         chip.addEventListener("click", () => {
@@ -358,13 +380,33 @@
               `(${msg.profileCount} found)`
             : "No saved profiles found in grid-userdata";
         }
+        if (this.backendSel) {
+          if (msg.backend) this.backendSel.value = msg.backend;
+          const av = msg.backends ?? {};
+          for (const opt of this.backendSel.options) {
+            const ok = av[opt.value] !== false;
+            opt.disabled = !ok;
+            opt.textContent =
+              opt.textContent.replace(" (not installed)", "") +
+              (ok ? "" : " (not installed)");
+          }
+        }
       } else if (msg.type === "chat-login-needed") {
-        const el = this.addMsg(
-          "ai",
-          "Your agent CLI is not signed in yet. One-time setup: open a " +
+        const guides = {
+          claude:
+            "Claude Code is not signed in yet. One-time setup: open a " +
             "terminal, start the Claude CLI, run /login and pick the " +
             "subscription sign-in. Then ask again.",
-        );
+          codex:
+            "Codex is not signed in yet. One-time setup: open a " +
+            "terminal, run codex login and finish the ChatGPT sign-in " +
+            "in the browser. Then ask again.",
+          gemini:
+            "Gemini is not signed in yet. One-time setup: open a " +
+            "terminal, run gemini and complete the Google sign-in. " +
+            "Then ask again.",
+        };
+        const el = this.addMsg("ai", guides[msg.backend] ?? guides.claude);
         el.classList.add("ga-error");
         this.finish();
       }

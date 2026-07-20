@@ -82,6 +82,81 @@ let shareProfiles = true;
 // fails (old sessions expire).
 let lastSessionId;
 
+// --- Backends --------------------------------------------------------
+// Three agents, one contract: the user's own CLI, signed in with the
+// user's own account, prompt over stdin (never argv - argv would pass
+// user text through cmd.exe), answer back to the panel. Claude Code
+// streams and resumes natively; Codex and Gemini answer in one piece
+// and get continuity from a package-kept transcript instead.
+
+const BACKENDS = {
+  claude: { label: "Claude Code" },
+  codex: { label: "Codex (ChatGPT)" },
+  gemini: { label: "Gemini" },
+};
+
+let backendId = "claude";
+
+// Last few Q/A pairs, prepended for the backends without native
+// session resume. Shared across backends so switching mid-chat keeps
+// the thread of the conversation.
+let transcript = [];
+
+function transcriptPrefixed(prompt) {
+  if (transcript.length === 0) return prompt;
+  const history = transcript
+    .map((t) => `Q: ${t.q}\nA: ${t.a}`)
+    .join("\n---\n");
+  return `Earlier in this conversation:\n${history}\n===\nNew question: ${prompt}`;
+}
+
+function rememberTurn(q, a) {
+  if (!a) return;
+  transcript.push({ q: q.slice(0, 1000), a: a.slice(0, 2000) });
+  if (transcript.length > 6) transcript.shift();
+}
+
+// npm-installed CLIs are .cmd shims, which Node refuses to spawn
+// directly - route them through cmd.exe. Overrides ending in .js run
+// under the current Node (tests).
+function resolveNpmCli(overrideEnv, cmdName) {
+  const override = process.env[overrideEnv];
+  if (override) {
+    if (override.endsWith(".js")) {
+      return { cmd: process.execPath, preArgs: [override], found: true };
+    }
+    return { cmd: override, preArgs: [], found: true };
+  }
+  const shim = path.join(process.env.APPDATA ?? "", "npm", `${cmdName}.cmd`);
+  if (fs.existsSync(shim)) {
+    return { cmd: "cmd.exe", preArgs: ["/c", shim], found: true };
+  }
+  return { cmd: "cmd.exe", preArgs: ["/c", cmdName], found: false };
+}
+
+function backendAvailability() {
+  const claudeResolved = resolveAgentCli();
+  return {
+    claude: !!process.env.GRID_AGENT_CLI || claudeResolved.cmd !== "claude",
+    codex: resolveNpmCli("GRID_AGENT_CODEX", "codex").found,
+    gemini: resolveNpmCli("GRID_AGENT_GEMINI", "gemini").found,
+  };
+}
+
+// Codex and Gemini read their instructions from AGENTS.md / GEMINI.md
+// in the working directory - the same brief Claude gets as a system
+// prompt, kept fresh whenever the profile toggle changes.
+function writeContextFiles() {
+  const brief = buildSystemPrompt(shareProfiles ? profilesDir : undefined);
+  for (const name of ["AGENTS.md", "GEMINI.md"]) {
+    try {
+      fs.writeFileSync(path.join(__dirname, name), brief + "\n");
+    } catch (e) {
+      /* read-only install location: the backends just run unbriefed */
+    }
+  }
+}
+
 // --- Agent CLI resolution --------------------------------------------
 // The Claude desktop app ships versioned CLI builds under
 // %APPDATA%\Claude\claude-code\<version>\claude.exe; a standalone
@@ -173,7 +248,13 @@ function stopActiveChat() {
   }
 }
 
-function runChat(prompt, isRetry) {
+function runChat(prompt) {
+  if (backendId === "codex") return runChatCodex(prompt);
+  if (backendId === "gemini") return runChatGemini(prompt);
+  return runChatClaude(prompt);
+}
+
+function runChatClaude(prompt, isRetry) {
   stopActiveChat();
   const { cmd, preArgs } = resolveAgentCli();
 
@@ -236,6 +317,7 @@ function runChat(prompt, isRetry) {
   let stderrTail = "";
   let sawText = false;
   let seenSessionId;
+  let fullText = "";
 
   child.stdout.on("data", (data) => {
     buffer += data.toString();
@@ -257,16 +339,18 @@ function runChat(prompt, isRetry) {
             // A signed-out CLI reports it as normal assistant text
             // (hardware-verified), not on stderr.
             if (/not logged in.*\/login/i.test(part.text)) {
-              toPanel({ type: "chat-login-needed" });
+              toPanel({ type: "chat-login-needed", backend: "claude" });
               sawText = true;
               continue;
             }
             sawText = true;
+            fullText += part.text;
             toPanel({ type: "chat-chunk", text: part.text });
           }
         }
       } else if (event.type === "result") {
         if (seenSessionId) lastSessionId = seenSessionId;
+        rememberTurn(prompt, fullText);
         toPanel({
           type: "chat-done",
           seconds: Math.round((event.duration_ms ?? 0) / 100) / 10,
@@ -294,20 +378,169 @@ function runChat(prompt, isRetry) {
     if (sawText) return; // normal path already reported chat-done
     const tail = stderrTail.trim();
     if (/log ?in|logged in/i.test(tail)) {
-      toPanel({ type: "chat-login-needed" });
+      toPanel({ type: "chat-login-needed", backend: "claude" });
       return;
     }
     // A dead --resume target (expired or cleaned-up session) should
     // degrade to a fresh conversation, not an error.
     if (resumingFrom && !isRetry) {
       lastSessionId = undefined;
-      runChat(prompt, true);
+      runChatClaude(prompt, true);
       return;
     }
     toPanel({
       type: "chat-error",
       message: tail || `Agent exited with code ${code} and said nothing`,
     });
+  });
+}
+
+// Codex answers arrive via --output-last-message (its stdout is
+// progress logs, not the answer): one chunk on completion. The
+// read-only sandbox blocks writes and commands but allows file reads,
+// so AGENTS.md and the configs stay reachable.
+function runChatCodex(prompt) {
+  stopActiveChat();
+  const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_CODEX", "codex");
+  const outFile = path.join(
+    require("os").tmpdir(),
+    `grid-agent-codex-${Date.now()}.txt`,
+  );
+  let child;
+  try {
+    child = spawn(
+      cmd,
+      [
+        ...preArgs,
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--output-last-message",
+        outFile,
+      ],
+      { windowsHide: true, cwd: __dirname },
+    );
+  } catch (e) {
+    toPanel({ type: "chat-error", message: `Could not start Codex: ${e.message}` });
+    return;
+  }
+  activeChild = child;
+  toPanel({ type: "chat-start" });
+  child.stdin.write(transcriptPrefixed(prompt));
+  child.stdin.end();
+
+  let tail = "";
+  const keepTail = (d) => {
+    tail = (tail + d.toString()).slice(-600);
+  };
+  child.stdout.on("data", keepTail);
+  child.stderr.on("data", keepTail);
+
+  const killTimer = setTimeout(() => {
+    if (activeChild === child) {
+      stopActiveChat();
+      toPanel({ type: "chat-error", message: "Codex timed out (5 min)" });
+    }
+  }, CHAT_TIMEOUT_MS);
+
+  child.on("error", (e) => {
+    if (activeChild === child) activeChild = undefined;
+    toPanel({ type: "chat-error", message: `Could not start Codex: ${e.message}` });
+  });
+
+  child.on("close", () => {
+    clearTimeout(killTimer);
+    if (activeChild === child) activeChild = undefined;
+    let answer = "";
+    try {
+      answer = fs.readFileSync(outFile, "utf8").trim();
+      fs.unlinkSync(outFile);
+    } catch (e) {
+      /* no answer file */
+    }
+    if (answer) {
+      rememberTurn(prompt, answer);
+      toPanel({ type: "chat-chunk", text: answer });
+      toPanel({ type: "chat-done" });
+    } else if (/log ?in|logged ?in|401|auth/i.test(tail)) {
+      toPanel({ type: "chat-login-needed", backend: "codex" });
+    } else {
+      toPanel({
+        type: "chat-error",
+        message: tail.trim().slice(-300) || "Codex returned nothing",
+      });
+    }
+  });
+}
+
+// Gemini streams its answer on stdout in plan (read-only) mode; the
+// question rides stdin and -p carries only a fixed instruction, so no
+// user text ever passes through cmd.exe argv.
+function runChatGemini(prompt) {
+  stopActiveChat();
+  const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_GEMINI", "gemini");
+  const args = [
+    ...preArgs,
+    "-p",
+    "Answer the question given on stdin.",
+    "--approval-mode",
+    "plan",
+    "-o",
+    "text",
+  ];
+  if (shareProfiles && profilesDir) {
+    args.push("--include-directories", profilesDir);
+  }
+  let child;
+  try {
+    child = spawn(cmd, args, { windowsHide: true, cwd: __dirname });
+  } catch (e) {
+    toPanel({ type: "chat-error", message: `Could not start Gemini: ${e.message}` });
+    return;
+  }
+  activeChild = child;
+  toPanel({ type: "chat-start" });
+  child.stdin.write(transcriptPrefixed(prompt));
+  child.stdin.end();
+
+  let fullText = "";
+  let stderrTail = "";
+  child.stdout.on("data", (d) => {
+    const text = d.toString();
+    fullText += text;
+    toPanel({ type: "chat-chunk", text });
+  });
+  child.stderr.on("data", (d) => {
+    stderrTail = (stderrTail + d.toString()).slice(-600);
+  });
+
+  const killTimer = setTimeout(() => {
+    if (activeChild === child) {
+      stopActiveChat();
+      toPanel({ type: "chat-error", message: "Gemini timed out (5 min)" });
+    }
+  }, CHAT_TIMEOUT_MS);
+
+  child.on("error", (e) => {
+    if (activeChild === child) activeChild = undefined;
+    toPanel({ type: "chat-error", message: `Could not start Gemini: ${e.message}` });
+  });
+
+  child.on("close", () => {
+    clearTimeout(killTimer);
+    if (activeChild === child) activeChild = undefined;
+    if (fullText.trim()) {
+      rememberTurn(prompt, fullText.trim());
+      toPanel({ type: "chat-done" });
+    } else if (/auth|log ?in|credential|sign.?in|oauth/i.test(stderrTail)) {
+      toPanel({ type: "chat-login-needed", backend: "gemini" });
+    } else {
+      toPanel({
+        type: "chat-error",
+        message: stderrTail.trim().slice(-300) || "Gemini returned nothing",
+      });
+    }
   });
 }
 
@@ -319,6 +552,15 @@ function sendAgentStatus() {
     shareProfiles,
     profilesFound: !!profilesDir,
     profileCount: profilesDir ? countProfiles(profilesDir) : 0,
+    backend: backendId,
+    backends: backendAvailability(),
+  });
+}
+
+function persistSettings() {
+  controller?.sendMessageToEditor({
+    type: "persist-data",
+    data: { shareProfiles, backend: backendId },
   });
 }
 
@@ -326,7 +568,9 @@ exports.loadPackage = async function (gridController, persistedData) {
   packageShutDown = false;
   controller = gridController;
   shareProfiles = persistedData?.shareProfiles !== false;
+  if (BACKENDS[persistedData?.backend]) backendId = persistedData.backend;
   profilesDir = findProfilesDir();
+  writeContextFiles();
 };
 
 exports.unloadPackage = async function () {
@@ -348,12 +592,17 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "chat-new") {
       stopActiveChat();
       lastSessionId = undefined;
+      transcript = [];
+    } else if (msg?.type === "set-backend") {
+      if (BACKENDS[msg.backend]) {
+        backendId = msg.backend;
+        persistSettings();
+        sendAgentStatus();
+      }
     } else if (msg?.type === "set-share-profiles") {
       shareProfiles = !!msg.enabled;
-      controller?.sendMessageToEditor({
-        type: "persist-data",
-        data: { shareProfiles },
-      });
+      persistSettings();
+      writeContextFiles();
       sendAgentStatus();
     } else if (msg?.type === "request-status") {
       sendAgentStatus();
