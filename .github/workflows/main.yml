@@ -69,7 +69,8 @@ jobs:
           node-version: 18
 
       - name: Install archiver package
-        run: npm install archiver
+        # v8+ is ESM-only and cannot be require()d; v7 is CommonJS.
+        run: npm install archiver@7
 
       - name: Run build script
         run: node build.js
