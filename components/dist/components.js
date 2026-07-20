@@ -256,8 +256,11 @@
         </div>
         <div class="ga-footer">
           <div class="ga-blocks" style="display:none;">
-            <div class="ga-note" style="font-weight:600;">Assistant blocks
-              in your palette</div>
+            <div class="ga-blocks-row">
+              <div class="ga-note" style="font-weight:600;">Assistant blocks
+                in your palette</div>
+              <button class="ga-blocks-x ga-blocks-clear">Clear all</button>
+            </div>
             <div class="ga-blocks-list"></div>
           </div>
           <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
@@ -313,6 +316,21 @@
           type: "set-share-profiles",
           enabled: this.shareToggle.checked,
         });
+      });
+      const clearBtn = root.querySelector(".ga-blocks-clear");
+      clearBtn.addEventListener("click", () => {
+        if (clearBtn.dataset.armed) {
+          delete clearBtn.dataset.armed;
+          clearBtn.textContent = "Clear all";
+          this.port?.postMessage({ type: "clear-blocks" });
+        } else {
+          clearBtn.dataset.armed = "1";
+          clearBtn.textContent = "Really remove all?";
+          setTimeout(() => {
+            delete clearBtn.dataset.armed;
+            clearBtn.textContent = "Clear all";
+          }, 3000);
+        }
       });
       root.querySelector(".ga-new").addEventListener("click", () => {
         this.port?.postMessage({ type: "chat-new" });

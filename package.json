@@ -1,6 +1,6 @@
 {
   "name": "package-grid-agent",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "AI assistant inside the Grid Editor",
   "main": "index.js",
   "scripts": {

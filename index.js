@@ -872,6 +872,14 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "delete-block") {
       deleteAgentBlock(String(msg.short));
       sendAgentStatus();
+    } else if (msg?.type === "clear-blocks") {
+      for (const b of [...agentBlocks]) deleteAgentBlock(b.short);
+      controller?.sendMessageToEditor({
+        type: "show-message",
+        message: "All assistant blocks removed from the palette",
+        messageType: "success",
+      });
+      sendAgentStatus();
     } else if (msg?.type === "set-backend") {
       if (BACKENDS[msg.backend]) {
         backendId = msg.backend;
