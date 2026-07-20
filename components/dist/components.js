@@ -4,40 +4,112 @@
 
 (function () {
   const PKG = "package-grid-agent";
+  const ACCENT = "20,206,150"; // editor green, rgb triplet
 
   const STYLE = `
-    .ga-root { display:flex; flex-direction:column; gap:8px; width:100%; }
-    .ga-log { display:flex; flex-direction:column; gap:6px; max-height:340px;
-      overflow-y:auto; padding:2px; }
-    .ga-msg { padding:6px 9px; border-radius:8px; font-size:12px;
-      line-height:1.45; white-space:pre-wrap; word-break:break-word; }
-    .ga-user { align-self:flex-end; max-width:85%;
-      background:rgba(20,206,150,0.16); color:var(--foreground,#ededed); }
-    .ga-ai { align-self:flex-start; max-width:95%;
-      background:rgba(255,255,255,0.07); color:var(--foreground,#ededed); }
-    .ga-row { display:flex; gap:6px; }
-    .ga-input { flex:1; min-width:0; padding:6px 8px; border-radius:6px;
-      font-size:12px; color:var(--foreground,#ededed);
-      background-color:rgba(0,0,0,0.25);
-      border:1px solid rgba(255,255,255,0.14); resize:none; }
-    .ga-input:focus { outline:none; border-color:rgba(20,206,150,0.6); }
-    .ga-send { padding:6px 12px; border-radius:6px; cursor:pointer;
-      font-size:12px; color:var(--foreground,#ededed);
-      background-color:rgba(0,0,0,0.25);
-      border:1px solid rgba(255,255,255,0.14); flex:none; }
-    .ga-note { font-size:11px; line-height:1.4;
-      color:var(--foreground-muted,#9d9d9d); }
-    .ga-code { font-family:Consolas,monospace; font-size:10.5px;
-      color:var(--foreground,#ededed); }
-    .ga-msg pre { background:rgba(0,0,0,0.35); border-radius:6px;
-      padding:6px 8px; margin:4px 0; overflow-x:auto;
-      font-family:Consolas,monospace; font-size:10.5px; }
-    .ga-msg code { font-family:Consolas,monospace; font-size:10.5px;
-      background:rgba(0,0,0,0.3); border-radius:3px; padding:0 3px; }
-    .ga-new { padding:6px 10px; border-radius:6px; cursor:pointer;
+    .ga-root { display:flex; flex-direction:column; gap:10px; width:100%;
+      font-size:12px; color:var(--foreground,#ededed); }
+
+    /* Conversation ---------------------------------------------------- */
+    .ga-log { display:flex; flex-direction:column; gap:10px;
+      min-height:260px; max-height:440px; overflow-y:auto;
+      padding:4px 2px; scroll-behavior:smooth; }
+    .ga-log::-webkit-scrollbar { width:6px; }
+    .ga-log::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12);
+      border-radius:3px; }
+    .ga-log::-webkit-scrollbar-track { background:transparent; }
+
+    .ga-wrap { position:relative; display:flex; }
+    .ga-wrap-user { justify-content:flex-end; }
+    .ga-wrap-ai { justify-content:flex-start; }
+
+    .ga-msg { line-height:1.55; white-space:pre-wrap;
+      word-break:break-word; user-select:text !important;
+      -webkit-user-select:text !important; cursor:text; }
+    .ga-msg ::selection { background:rgba(${ACCENT},0.35); }
+    .ga-user { max-width:85%; padding:7px 11px;
+      background:rgba(${ACCENT},0.14);
+      border:1px solid rgba(${ACCENT},0.25);
+      border-radius:10px 10px 3px 10px; }
+    .ga-ai { max-width:100%; width:100%; padding:2px 0 2px 11px;
+      border-left:2px solid rgba(${ACCENT},0.55); }
+    .ga-error { border-left-color:rgba(224,140,80,0.8);
+      color:var(--foreground-muted,#c9a); }
+
+    .ga-msg pre { position:relative; background:rgba(0,0,0,0.35);
+      border:1px solid rgba(255,255,255,0.08); border-radius:6px;
+      padding:7px 9px; margin:6px 0; overflow-x:auto;
+      font-family:Consolas,monospace; font-size:11px; line-height:1.5;
+      user-select:text !important; -webkit-user-select:text !important; }
+    .ga-msg pre:hover { border-color:rgba(${ACCENT},0.35); }
+    .ga-msg code { font-family:Consolas,monospace; font-size:11px;
+      background:rgba(0,0,0,0.3); border-radius:3px; padding:0 4px;
+      user-select:text !important; -webkit-user-select:text !important; }
+
+    .ga-copy { position:absolute; top:-2px; right:0; padding:2px 8px;
+      font-size:10px; border-radius:5px; cursor:pointer;
+      color:var(--foreground-muted,#9d9d9d);
+      background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.14);
+      opacity:0; transition:opacity 0.12s; }
+    .ga-wrap:hover .ga-copy { opacity:1; }
+    .ga-copy:hover { color:var(--foreground,#ededed);
+      border-color:rgba(${ACCENT},0.5); }
+
+    /* Empty state ----------------------------------------------------- */
+    .ga-empty { display:flex; flex-direction:column; gap:8px;
+      margin:auto 0; padding:12px 4px; align-items:flex-start; }
+    .ga-empty-title { color:var(--foreground-muted,#9d9d9d);
+      line-height:1.5; }
+    .ga-chip { padding:5px 10px; font-size:11px; border-radius:999px;
+      cursor:pointer; color:var(--foreground,#ededed); text-align:left;
+      background:rgba(255,255,255,0.05);
+      border:1px solid rgba(255,255,255,0.14); }
+    .ga-chip:hover { border-color:rgba(${ACCENT},0.5);
+      background:rgba(${ACCENT},0.08); }
+
+    /* Composer -------------------------------------------------------- */
+    .ga-composer { display:flex; gap:8px; align-items:flex-end; }
+    .ga-input { flex:1; min-width:0; padding:8px 10px; border-radius:8px;
+      font-size:12px; line-height:1.45; font-family:inherit;
+      color:var(--foreground,#ededed); background:rgba(0,0,0,0.25);
+      border:1px solid rgba(255,255,255,0.14); resize:none;
+      max-height:120px; overflow-y:auto; }
+    .ga-input:focus { outline:none; border-color:rgba(${ACCENT},0.6); }
+    .ga-send { padding:8px 16px; border-radius:8px; cursor:pointer;
+      font-size:12px; flex:none; color:#0d1f19;
+      background:rgba(${ACCENT},0.85); border:1px solid transparent;
+      font-weight:600; }
+    .ga-send:hover { background:rgba(${ACCENT},1); }
+    .ga-send.ga-stop { color:var(--foreground,#ededed);
+      background:rgba(224,80,80,0.2);
+      border-color:rgba(224,80,80,0.5); font-weight:400; }
+    .ga-send.ga-stop:hover { background:rgba(224,80,80,0.32); }
+
+    /* Meta row -------------------------------------------------------- */
+    .ga-meta { display:flex; justify-content:space-between;
+      align-items:center; min-height:20px; }
+    .ga-status { font-size:11px; color:var(--foreground-muted,#9d9d9d); }
+    .ga-thinking i { display:inline-block; width:4px; height:4px;
+      margin-left:3px; border-radius:50%;
+      background:rgba(${ACCENT},0.9); animation:ga-blink 1.2s infinite;
+      font-style:normal; }
+    .ga-thinking i:nth-child(2) { animation-delay:0.2s; }
+    .ga-thinking i:nth-child(3) { animation-delay:0.4s; }
+    @keyframes ga-blink { 0%,80%,100% { opacity:0.2; }
+      40% { opacity:1; } }
+    .ga-new { padding:4px 10px; border-radius:6px; cursor:pointer;
       font-size:11px; color:var(--foreground-muted,#9d9d9d);
       background:none; border:1px solid rgba(255,255,255,0.14);
       flex:none; }
+    .ga-new:hover { color:var(--foreground,#ededed);
+      border-color:rgba(255,255,255,0.3); }
+
+    /* Footer ----------------------------------------------------------- */
+    .ga-footer { display:flex; flex-direction:column; gap:6px;
+      border-top:1px solid rgba(255,255,255,0.1); padding-top:8px; }
+    .ga-note { font-size:11px; line-height:1.45;
+      color:var(--foreground-muted,#9d9d9d); }
+    .ga-code { font-family:Consolas,monospace; font-size:10.5px; }
   `;
 
   // Markdown-lite for assistant messages: escape everything first,
@@ -61,6 +133,12 @@
     return text;
   }
 
+  const STARTERS = [
+    "What do my saved configs do?",
+    "Write Lua for an edge-latched button",
+    "Why does my knob feel too coarse?",
+  ];
+
   class GridAgentChat extends HTMLElement {
     connectedCallback() {
       if (this._built) return;
@@ -73,32 +151,44 @@
       const root = document.createElement("div");
       root.className = "ga-root";
       root.innerHTML = `
-        <div class="ga-log"></div>
-        <div class="ga-row">
-          <textarea class="ga-input" rows="2"
+        <div class="ga-log">
+          <div class="ga-empty">
+            <div class="ga-empty-title">Ask about blocks, Lua, or your
+              saved configs. Answers come from your own agent, on your
+              machine.</div>
+            ${STARTERS.map(
+              (s) => `<button class="ga-chip">${s}</button>`,
+            ).join("")}
+          </div>
+        </div>
+        <div class="ga-composer">
+          <textarea class="ga-input" rows="1"
             placeholder="Ask about your Grid setup…"></textarea>
           <button class="ga-send">Send</button>
         </div>
-        <div class="ga-row" style="justify-content:space-between;align-items:center;">
-          <div class="ga-note ga-status"></div>
+        <div class="ga-meta">
+          <div class="ga-status"></div>
           <button class="ga-new">New chat</button>
         </div>
-        <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
-          <input type="checkbox" class="ga-share" checked
-            style="accent-color:#14ce96;flex:none;" />
-          <span class="ga-share-label">Let the agent read my saved
-            profiles and presets</span>
-        </label>
-        <div class="ga-note">
-          Answers come from your own agent. The package runs your
-          installed Claude Code headless: your subscription, your
-          machine, no API key stored anywhere. It reads the built-in
-          Grid reference, and with the toggle above, your saved
-          configs in <span class="ga-code">grid-userdata</span>.
+        <div class="ga-footer">
+          <label class="ga-note" style="display:flex;gap:6px;cursor:pointer;">
+            <input type="checkbox" class="ga-share" checked
+              style="accent-color:rgb(${ACCENT});flex:none;" />
+            <span class="ga-share-label">Let the agent read my saved
+              profiles and presets</span>
+          </label>
+          <div class="ga-note">
+            Runs your installed Claude Code headless: your subscription,
+            your machine, no API key stored anywhere. Reads the built-in
+            Grid reference and, with the toggle, your saved configs in
+            <span class="ga-code">grid-userdata</span>. Hover a reply to
+            copy it; click a code block to copy the code.
+          </div>
         </div>`;
       this.appendChild(root);
 
       this.log = root.querySelector(".ga-log");
+      this.empty = root.querySelector(".ga-empty");
       this.input = root.querySelector(".ga-input");
       this.sendBtn = root.querySelector(".ga-send");
       this.status = root.querySelector(".ga-status");
@@ -106,6 +196,14 @@
       this.shareLabel = root.querySelector(".ga-share-label");
       this.busy = false;
       this.current = null;
+
+      for (const chip of root.querySelectorAll(".ga-chip")) {
+        chip.addEventListener("click", () => {
+          this.input.value = chip.textContent.trim();
+          this.autoGrow();
+          this.input.focus();
+        });
+      }
 
       this.shareToggle.addEventListener("change", () => {
         this.port?.postMessage({
@@ -115,8 +213,11 @@
       });
       root.querySelector(".ga-new").addEventListener("click", () => {
         this.port?.postMessage({ type: "chat-new" });
-        this.log.textContent = "";
-        this.finish("New conversation.");
+        for (const el of [...this.log.children]) {
+          if (el !== this.empty) el.remove();
+        }
+        this.empty.style.display = "";
+        this.finish("");
       });
       this.sendBtn.addEventListener("click", () => {
         if (this.busy) {
@@ -125,11 +226,20 @@
           this.send();
         }
       });
+      this.input.addEventListener("input", () => this.autoGrow());
       this.input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           this.send();
         }
+      });
+
+      // Click-to-copy on code blocks - but never clobber a manual
+      // text selection in progress.
+      this.log.addEventListener("click", (e) => {
+        const pre = e.target.closest?.("pre");
+        if (!pre || String(window.getSelection?.() ?? "").length > 0) return;
+        this.copyText(pre.textContent, "Code copied");
       });
 
       try {
@@ -141,12 +251,61 @@
       }
     }
 
-    addMsg(cls, text) {
+    autoGrow() {
+      this.input.style.height = "auto";
+      this.input.style.height = Math.min(this.input.scrollHeight, 120) + "px";
+    }
+
+    copyText(text, doneLabel) {
+      navigator.clipboard?.writeText(text).then(
+        () => this.flashStatus(doneLabel),
+        () => this.flashStatus("Copy failed"),
+      );
+    }
+
+    flashStatus(text) {
+      const prev = this.busy ? null : this.status.innerHTML;
+      this.status.textContent = text;
+      clearTimeout(this._flashTimer);
+      this._flashTimer = setTimeout(() => {
+        if (!this.busy) this.status.innerHTML = prev ?? "";
+      }, 1400);
+    }
+
+    nearBottom() {
+      return (
+        this.log.scrollTop + this.log.clientHeight >=
+        this.log.scrollHeight - 48
+      );
+    }
+
+    scrollDown(force) {
+      if (force || this.nearBottom()) {
+        this.log.scrollTop = this.log.scrollHeight;
+      }
+    }
+
+    addMsg(kind, text) {
+      this.empty.style.display = "none";
+      const wrap = document.createElement("div");
+      wrap.className = `ga-wrap ga-wrap-${kind === "user" ? "user" : "ai"}`;
       const el = document.createElement("div");
-      el.className = `ga-msg ${cls}`;
+      el.className = `ga-msg ga-${kind}`;
       el.textContent = text;
-      this.log.appendChild(el);
-      this.log.scrollTop = this.log.scrollHeight;
+      el._raw = text;
+      wrap.appendChild(el);
+
+      const copy = document.createElement("button");
+      copy.className = "ga-copy";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.copyText(el._raw ?? el.textContent, "Copied");
+      });
+      wrap.appendChild(copy);
+
+      this.log.appendChild(wrap);
+      this.scrollDown(true);
       return el;
     }
 
@@ -154,18 +313,22 @@
       const prompt = this.input.value.trim();
       if (!prompt || this.busy) return;
       this.input.value = "";
+      this.autoGrow();
       this.busy = true;
       this.sendBtn.textContent = "Stop";
-      this.addMsg("ga-user", prompt);
+      this.sendBtn.classList.add("ga-stop");
+      this.addMsg("user", prompt);
       this.current = null;
       this.currentRaw = "";
-      this.status.textContent = "Thinking…";
+      this.status.innerHTML =
+        'Thinking<span class="ga-thinking"><i></i><i></i><i></i></span>';
       this.port?.postMessage({ type: "chat", prompt });
     }
 
     finish(statusText) {
       this.busy = false;
       this.sendBtn.textContent = "Send";
+      this.sendBtn.classList.remove("ga-stop");
       this.status.textContent = statusText ?? "";
       this.current = null;
       this.currentRaw = "";
@@ -174,16 +337,18 @@
     onPortMessage(msg) {
       if (!msg) return;
       if (msg.type === "chat-chunk") {
-        if (!this.current) this.current = this.addMsg("ga-ai", "");
+        if (!this.current) this.current = this.addMsg("ai", "");
         this.currentRaw = (this.currentRaw ?? "") + msg.text;
+        this.current._raw = this.currentRaw;
         this.current.innerHTML = renderMarkdown(this.currentRaw);
-        this.log.scrollTop = this.log.scrollHeight;
+        this.scrollDown(false);
       } else if (msg.type === "chat-done") {
         this.finish(
           msg.stopped ? "Stopped." : msg.seconds ? `${msg.seconds}s` : "",
         );
       } else if (msg.type === "chat-error") {
-        this.addMsg("ga-ai", msg.message);
+        const el = this.addMsg("ai", msg.message);
+        el.classList.add("ga-error");
         this.finish();
       } else if (msg.type === "agent-status") {
         if (this.shareToggle) this.shareToggle.checked = !!msg.shareProfiles;
@@ -194,12 +359,13 @@
             : "No saved profiles found in grid-userdata";
         }
       } else if (msg.type === "chat-login-needed") {
-        this.addMsg(
-          "ga-ai",
+        const el = this.addMsg(
+          "ai",
           "Your agent CLI is not signed in yet. One-time setup: open a " +
-            "terminal, run  claude setup-token  and follow the browser " +
-            "sign-in. After that, ask again.",
+            "terminal, start the Claude CLI, run /login and pick the " +
+            "subscription sign-in. Then ask again.",
         );
+        el.classList.add("ga-error");
         this.finish();
       }
     }
