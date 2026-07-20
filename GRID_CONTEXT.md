@@ -86,9 +86,15 @@ bite everyone:
   generated Lua and users may edit it directly.
 - Saved profiles / presets / configs are JSON files in
   `Documents\grid-userdata\configs\` - one file per saved item with
-  `name`, `type` (profile / preset / button etc.), `version`, and a
-  `configs` object holding the Lua of every event. Reading these
-  files is the way to answer questions about the user's own setup.
+  `name`, `type` (profile / preset / button etc.), `version`,
+  `modifiedAt`, and a `configs` object holding the Lua of every
+  event. Reading these files is the way to answer questions about the
+  user's own setup - BUT they are snapshots from when the user last
+  clicked save. **The config currently stored on a module can differ
+  and exists nowhere on disk.** When asked what a module does "right
+  now", answer from the newest relevant file, state its `modifiedAt`
+  age, and add that saving the profile in the Editor refreshes the
+  snapshot if things have changed since.
 - Packages install from GitHub or a local folder (Package Manager).
   A package = Node process (index.js) + panel components; it CANNOT
   read the Editor's runtime state (connected modules, selected

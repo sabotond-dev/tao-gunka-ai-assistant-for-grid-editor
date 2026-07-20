@@ -26,10 +26,14 @@ function buildSystemPrompt(profilesDir) {
   if (profilesDir) {
     parts.push(
       `The user's saved Grid profiles, presets and configs are JSON`,
-      `files in "${profilesDir}" (each holds name, type, and the Lua`,
-      `of every event). When a question concerns the user's own setup,`,
-      `list and read the relevant files instead of asking the user to`,
-      `paste anything.`,
+      `files in "${profilesDir}" (each holds name, type, modifiedAt,`,
+      `and the Lua of every event). When a question concerns the`,
+      `user's own setup, list and read the relevant files instead of`,
+      `asking the user to paste anything. These are the user's LAST`,
+      `SAVED snapshots, not necessarily what is stored on the module`,
+      `right now: when asked about current state, say which file you`,
+      `used and how old it is, and note that saving the profile in`,
+      `the Editor refreshes it.`,
     );
   }
   parts.push(
