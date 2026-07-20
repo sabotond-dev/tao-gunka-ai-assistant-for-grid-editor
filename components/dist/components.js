@@ -250,9 +250,19 @@
             <option value="claude">Claude Code</option>
             <option value="codex">Codex (ChatGPT)</option>
             <option value="gemini">Gemini</option>
+            <option value="local">Local (Ollama / Kobold)</option>
           </select>
           <div class="ga-status" style="flex:1;margin:0 8px;"></div>
           <button class="ga-new">New chat</button>
+        </div>
+        <div class="ga-local" style="display:none;gap:6px;">
+          <input class="ga-input ga-local-url" type="text"
+            placeholder="http://localhost:11434/v1"
+            title="OpenAI-compatible server URL" />
+          <input class="ga-input ga-local-model" type="text"
+            style="max-width:130px;"
+            placeholder="model (Ollama)"
+            title="Model name; Kobold ignores it" />
         </div>
         <div class="ga-footer">
           <div class="ga-blocks" style="display:none;">
@@ -270,13 +280,15 @@
               profiles and presets</span>
           </label>
           <div class="ga-note">
-            Answers come from your own agent, run headless on your
-            machine: Claude Code on your subscription, Codex on your
-            ChatGPT account, or Gemini on your Google account. No API
-            key stored anywhere. Every agent reads the built-in Grid
-            reference and, with the toggle, your saved configs in
-            <span class="ga-code">grid-userdata</span>. Hover a reply to
-            copy it; click a code block to copy the code.
+            Answers come from your own agent, run on your machine:
+            Claude Code on your subscription, Codex on your ChatGPT
+            account, or any local OpenAI-compatible server (Ollama,
+            KoboldCpp, LM Studio). No API key stored anywhere. Agents
+            read the built-in Grid reference and, with the toggle, your
+            saved configs in <span class="ga-code">grid-userdata</span>
+            (local models get the reference pushed instead; they cannot
+            open files). Hover a reply to copy it; click a code block
+            to copy the code.
           </div>
         </div>`;
       this.appendChild(root);
@@ -296,7 +308,22 @@
       this.cardSeq = 0;
       this.pendingCards = new Map();
 
+      this.localBox = root.querySelector(".ga-local");
+      this.localUrl = root.querySelector(".ga-local-url");
+      this.localModel = root.querySelector(".ga-local-model");
+      const pushLocalConfig = () => {
+        this.port?.postMessage({
+          type: "set-local-config",
+          url: this.localUrl.value,
+          model: this.localModel.value,
+        });
+      };
+      this.localUrl.addEventListener("change", pushLocalConfig);
+      this.localModel.addEventListener("change", pushLocalConfig);
+
       this.backendSel.addEventListener("change", () => {
+        this.localBox.style.display =
+          this.backendSel.value === "local" ? "flex" : "none";
         this.port?.postMessage({
           type: "set-backend",
           backend: this.backendSel.value,
@@ -548,6 +575,18 @@
             : "No saved profiles found in grid-userdata";
         }
         this.renderBlocksList(msg.blocks);
+        if (this.localUrl && msg.localUrl !== undefined) {
+          if (document.activeElement !== this.localUrl) {
+            this.localUrl.value = msg.localUrl;
+          }
+          if (document.activeElement !== this.localModel) {
+            this.localModel.value = msg.localModel ?? "";
+          }
+        }
+        if (this.localBox && msg.backend) {
+          this.localBox.style.display =
+            msg.backend === "local" ? "flex" : "none";
+        }
         if (this.backendSel) {
           if (msg.backend) this.backendSel.value = msg.backend;
           const av = msg.backends ?? {};

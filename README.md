@@ -5,10 +5,11 @@ your button fires twice and it answers with the edge-latch fix. Ask
 what your saved profile does and it reads the file. Describe a block
 you want and it builds one you can add to your config.
 
-The answers come from your own agent, running headless on your
-machine: Claude Code on your Claude subscription, or Codex on your
-ChatGPT account. This package stores no API key, talks to no server of
-its own, and adds no cost beyond the plan you already pay for.
+The answers come from your own agent, running on your machine:
+Claude Code on your Claude subscription, Codex on your ChatGPT
+account, or any local OpenAI-compatible model server such as Ollama,
+KoboldCpp or LM Studio. This package stores no API key, talks to no
+server of its own, and adds no cost beyond what you already run.
 
 ## What it does
 
@@ -39,6 +40,9 @@ its own, and adds no cost beyond the plan you already pay for.
      pick the subscription sign-in.
    - **Codex**: `npm install -g @openai/codex` in a terminal, then ask
      anything and click "Sign in with ChatGPT" when offered.
+   - **Local**: start your server (Ollama, KoboldCpp, LM Studio),
+     pick Local in the dropdown, and set the URL and model in the row
+     that appears. No sign-in at all.
 3. Pick the agent in the dropdown under the chat. That is the whole
    setup.
 
@@ -54,6 +58,10 @@ demand: the built-in Grid reference, and your saved configs in
 those two places are blocked by the agents' own sandboxes. Everything
 else about the exchange is between you and the AI provider you
 already have an account with.
+
+Local models are the exception twice over: they cannot open files, so
+the reference is pushed to them whole and they only see your configs'
+file names, and nothing leaves your machine at all.
 
 One honest limit: the files are your last saved snapshots. The config
 currently stored on a module lives on the module, and nothing on disk

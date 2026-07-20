@@ -97,9 +97,17 @@ const BACKENDS = {
   claude: { label: "Claude Code" },
   codex: { label: "Codex (ChatGPT)" },
   gemini: { label: "Gemini" },
+  local: { label: "Local (Ollama / Kobold)" },
 };
 
 let backendId = "claude";
+
+// Local backend: any OpenAI-compatible server (Ollama, KoboldCpp,
+// LM Studio, llama.cpp). Direct HTTP from this process, streaming.
+// Local models have no file tools, so the Grid knowledge is pushed
+// into the system message instead of read on demand.
+let localUrl = "http://localhost:11434/v1";
+let localModel = "";
 
 // Last few Q/A pairs, prepended for the backends without native
 // session resume. Shared across backends so switching mid-chat keeps
@@ -147,6 +155,8 @@ function backendAvailability() {
     claude: !!process.env.GRID_AGENT_CLI || claudeResolved.cmd !== "claude",
     codex: resolveNpmCli("GRID_AGENT_CODEX", "codex").found,
     gemini: resolveNpmCli("GRID_AGENT_GEMINI", "gemini").found,
+    // Reachability is only knowable at call time; errors say so.
+    local: true,
   };
 }
 
@@ -299,12 +309,133 @@ function stopActiveChat() {
     } catch (e) {}
     activeChild = undefined;
   }
+  if (activeLocalAbort) {
+    try {
+      activeLocalAbort.abort();
+    } catch (e) {}
+    activeLocalAbort = undefined;
+  }
 }
 
 function runChat(prompt) {
   if (backendId === "codex") return runChatCodex(prompt);
   if (backendId === "gemini") return runChatGemini(prompt);
+  if (backendId === "local") return runChatLocal(prompt);
   return runChatClaude(prompt);
+}
+
+// The system message for tool-less local models: the brief, the full
+// reference, and (since the model cannot list files itself) the names
+// of the user's saved configs so it can at least ask for the right one.
+function localSystemMessage() {
+  let content = buildSystemPrompt(undefined);
+  try {
+    content +=
+      "\n\n" +
+      fs.readFileSync(path.join(__dirname, "GRID_CONTEXT.md"), "utf8");
+  } catch (e) {}
+  if (shareProfiles && profilesDir) {
+    try {
+      const names = fs
+        .readdirSync(profilesDir)
+        .filter((f) => f.endsWith(".json"))
+        .slice(0, 60);
+      content +=
+        "\n\nYou are running as a local model without file tools, so " +
+        "you CANNOT open files. The user's saved configs are named:\n" +
+        names.join(", ") +
+        "\nWhen a question needs a file's content, ask the user to " +
+        "paste the relevant part.";
+    } catch (e) {}
+  }
+  return content;
+}
+
+let activeLocalAbort;
+
+function runChatLocal(prompt) {
+  stopActiveChat();
+  const abort = new AbortController();
+  activeLocalAbort = abort;
+  toPanel({ type: "chat-start" });
+
+  const messages = [{ role: "system", content: localSystemMessage() }];
+  for (const t of transcript) {
+    messages.push({ role: "user", content: t.q });
+    messages.push({ role: "assistant", content: t.a });
+  }
+  messages.push({ role: "user", content: prompt });
+
+  const url = localUrl.replace(/\/+$/, "") + "/chat/completions";
+  const killTimer = setTimeout(() => abort.abort(), CHAT_TIMEOUT_MS);
+  let fullText = "";
+
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: localModel || "local",
+      messages,
+      stream: true,
+    }),
+    signal: abort.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const body = (await res.text()).slice(0, 300);
+        throw new Error(`${res.status}: ${body}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          const data = line.replace(/^data:\s*/, "").trim();
+          if (!data || data === "[DONE]") continue;
+          try {
+            const delta =
+              JSON.parse(data).choices?.[0]?.delta?.content ?? "";
+            if (delta) {
+              fullText += delta;
+              toPanel({ type: "chat-chunk", text: delta });
+            }
+          } catch (e) {
+            /* keep-alive or non-JSON line */
+          }
+        }
+      }
+      if (fullText) {
+        rememberTurn(prompt, fullText);
+        toPanel({ type: "chat-done" });
+      } else {
+        toPanel({
+          type: "chat-error",
+          message: "The local model returned nothing",
+        });
+      }
+    })
+    .catch((e) => {
+      if (abort.signal.aborted) {
+        if (fullText) rememberTurn(prompt, fullText);
+        return; // user Stop or timeout already reported
+      }
+      toPanel({
+        type: "chat-error",
+        message:
+          `Cannot reach ${url} (${String(e.message).slice(0, 160)}). ` +
+          "Is the local server running? Set the URL and model in the " +
+          "panel.",
+      });
+    })
+    .finally(() => {
+      clearTimeout(killTimer);
+      if (activeLocalAbort === abort) activeLocalAbort = undefined;
+    });
 }
 
 function runChatClaude(prompt, isRetry) {
@@ -799,6 +930,8 @@ function sendAgentStatus() {
     backend: backendId,
     backends: backendAvailability(),
     blocks: agentBlocks.map((b) => ({ short: b.short, name: b.name })),
+    localUrl,
+    localModel,
   });
 }
 
@@ -812,6 +945,8 @@ function persistSettings() {
       nextBlockNum,
       transcript,
       lastSessionId,
+      localUrl,
+      localModel,
     },
   });
 }
@@ -835,6 +970,12 @@ exports.loadPackage = async function (gridController, persistedData) {
   }
   if (typeof persistedData?.lastSessionId === "string") {
     lastSessionId = persistedData.lastSessionId;
+  }
+  if (typeof persistedData?.localUrl === "string" && persistedData.localUrl) {
+    localUrl = persistedData.localUrl;
+  }
+  if (typeof persistedData?.localModel === "string") {
+    localModel = persistedData.localModel;
   }
   profilesDir = findProfilesDir();
   writeContextFiles();
@@ -895,6 +1036,14 @@ exports.addMessagePort = async function (port, senderId) {
         messageType: "success",
       });
       sendAgentStatus();
+    } else if (msg?.type === "set-local-config") {
+      if (typeof msg.url === "string" && msg.url.trim()) {
+        localUrl = msg.url.trim();
+      }
+      if (typeof msg.model === "string") {
+        localModel = msg.model.trim();
+      }
+      persistSettings();
     } else if (msg?.type === "set-backend") {
       if (BACKENDS[msg.backend]) {
         backendId = msg.backend;
