@@ -179,16 +179,28 @@ function removeConfigMirror() {
 }
 
 // Codex and Gemini read their instructions from AGENTS.md / GEMINI.md
-// in the working directory - the same brief Claude gets as a system
-// prompt, kept fresh whenever the profile toggle changes. Their
-// configs path is the in-workspace mirror.
+// in the working directory, re-read on every run. Claude reliably
+// follows the "read GRID_CONTEXT.md" pointer; Codex demonstrably does
+// not always - so these files get the ENTIRE reference inlined, not a
+// pointer (hardware-tested: pointer-only Codex ignored the reference
+// and imitated legacy Lua from a saved profile instead).
 function writeContextFiles() {
   const brief = buildSystemPrompt(
     shareProfiles && profilesDir ? CONFIG_MIRROR : undefined,
   );
+  let reference = "";
+  try {
+    reference = fs.readFileSync(
+      path.join(__dirname, "GRID_CONTEXT.md"),
+      "utf8",
+    );
+  } catch (e) {
+    /* reference missing: ship the brief alone */
+  }
+  const content = `${brief}\n\n${reference}\n`;
   for (const name of ["AGENTS.md", "GEMINI.md"]) {
     try {
-      fs.writeFileSync(path.join(__dirname, name), brief + "\n");
+      fs.writeFileSync(path.join(__dirname, name), content);
     } catch (e) {
       /* read-only install location: the backends just run unbriefed */
     }
