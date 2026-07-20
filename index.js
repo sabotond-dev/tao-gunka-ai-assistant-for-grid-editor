@@ -42,6 +42,30 @@ let packageShutDown = false;
 // Returns {cmd, preArgs}. A .js override (tests) runs through the
 // current Node executable, since Windows will not spawn script shims
 // directly.
+//
+// The desktop app's bundled CLI lives in TWO places depending on who
+// is looking: the MSIX (Microsoft Store) install virtualizes AppData,
+// so processes outside the app container - like the Grid Editor - see
+// it only under %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming.
+// Non-store installs use plain %APPDATA%. Scan both, newest version
+// wins, PATH `claude` as the final fallback.
+function newestCliIn(base) {
+  try {
+    const versions = fs
+      .readdirSync(base)
+      .filter((d) => fs.existsSync(path.join(base, d, "claude.exe")))
+      .sort((a, b) =>
+        b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
+      );
+    if (versions.length > 0) {
+      return path.join(base, versions[0], "claude.exe");
+    }
+  } catch (e) {
+    /* not present */
+  }
+  return undefined;
+}
+
 function resolveAgentCli() {
   const override = process.env.GRID_AGENT_CLI;
   if (override) {
@@ -50,19 +74,36 @@ function resolveAgentCli() {
     }
     return { cmd: override, preArgs: [] };
   }
+
+  const bases = [
+    path.join(process.env.APPDATA ?? "", "Claude", "claude-code"),
+  ];
   try {
-    const base = path.join(process.env.APPDATA ?? "", "Claude", "claude-code");
-    const versions = fs
-      .readdirSync(base)
-      .filter((d) => fs.existsSync(path.join(base, d, "claude.exe")))
-      .sort((a, b) =>
-        b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
-      );
-    if (versions.length > 0) {
-      return { cmd: path.join(base, versions[0], "claude.exe"), preArgs: [] };
+    const packagesDir = path.join(
+      process.env.LOCALAPPDATA ?? "",
+      "Packages",
+    );
+    for (const entry of fs.readdirSync(packagesDir)) {
+      if (/^Claude_/.test(entry)) {
+        bases.push(
+          path.join(
+            packagesDir,
+            entry,
+            "LocalCache",
+            "Roaming",
+            "Claude",
+            "claude-code",
+          ),
+        );
+      }
     }
   } catch (e) {
-    /* fall through to PATH */
+    /* no Packages dir (non-Windows or no store apps) */
+  }
+
+  for (const base of bases) {
+    const cli = newestCliIn(base);
+    if (cli) return { cmd: cli, preArgs: [] };
   }
   return { cmd: "claude", preArgs: [] };
 }
