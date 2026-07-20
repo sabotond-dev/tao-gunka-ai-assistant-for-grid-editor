@@ -1,9 +1,11 @@
-# AI assistant for the Grid Editor
+# Tao Gunka
 
-A chat panel inside the Grid Editor that actually knows Grid. Ask why
-your button fires twice and it answers with the edge-latch fix. Ask
-what your saved profile does and it reads the file. Describe a block
-you want and it builds one you can add to your config.
+An AI assistant that lives inside the Grid Editor and actually knows
+Grid. Ask why your button fires twice and it answers with the
+edge-latch fix. Ask what your saved profile does and it reads the
+file. Describe a block you want and it builds one you can add to your
+config. The name honors a stone-hearted boss from a beloved retro
+MMO; like him, it sits quietly in its cave until you come asking.
 
 The answers come from your own agent, running on your machine:
 Claude Code on your Claude subscription, Codex on your ChatGPT

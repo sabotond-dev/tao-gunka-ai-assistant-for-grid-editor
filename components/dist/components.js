@@ -232,9 +232,9 @@
       root.innerHTML = `
         <div class="ga-log">
           <div class="ga-empty">
-            <div class="ga-empty-title">Ask about blocks, Lua, or your
-              saved configs. Answers come from your own agent, on your
-              machine.</div>
+            <div class="ga-empty-title">Ask Tao Gunka about blocks,
+              Lua, or your saved configs. Answers come from your own
+              agent, on your machine.</div>
             ${STARTERS.map(
               (s) => `<button class="ga-chip">${s}</button>`,
             ).join("")}
