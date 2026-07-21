@@ -109,6 +109,18 @@ async function waitFor(port, type, timeoutMs) {
       "agent read the user's saved configs",
       r2.done && /Audio Gain|VSN1|numpad|Copy|Export|Group/i.test(r2.text),
     );
+    // Live-context wiring: the real CLI must reach the loopback MCP
+    // server. No modules answer the harness's fake controller, so the
+    // honest no-reply text coming back proves the whole path.
+    const r3 = await ask(
+      "mcp-live-tools",
+      "Call the grid_status tool now and quote its reply.",
+      150000,
+    );
+    check(
+      "real CLI reached the MCP server",
+      r3.done && /No connected module replied|connected module/i.test(r3.text),
+    );
   } else {
     // Happy path through the mock.
     port.emit({ type: "chat", prompt: "hello grid" });
@@ -532,9 +544,189 @@ async function waitFor(port, type, timeoutMs) {
     );
     port.emit({ type: "set-backend", backend: "claude" });
     await sleep(50);
+
+    // --- Live context (MCP) -------------------------------------------
+    // The package hosts a loopback MCP server; these checks speak its
+    // streamable-HTTP dialect directly and play the module side of the
+    // Lua round trips by calling pkg.sendMessage like the editor would.
+    for (let i = 0; i < 20 && pkg._mcpInfo().port === 0; i++) await sleep(50);
+    const mcp = pkg._mcpInfo();
+    check("mcp server listens on loopback", mcp.port > 0 && !!mcp.token);
+
+    const mcpPost = (body, token) =>
+      fetch(`http://127.0.0.1:${mcp.port}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token ?? mcp.token}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+    const unauth = await mcpPost(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      "wrong-token",
+    );
+    check("mcp rejects a bad bearer token", unauth.status === 401);
+
+    const init = await (
+      await mcpPost({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18" },
+      })
+    ).json();
+    check(
+      "mcp initialize identifies the server",
+      init.result?.serverInfo?.name === "tao-gunka-grid" &&
+        init.result?.protocolVersion === "2025-06-18",
+    );
+    const note = await mcpPost({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    });
+    check("mcp notifications get a 202", note.status === 202);
+
+    const list = await (
+      await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+    ).json();
+    check(
+      "mcp lists the two live tools",
+      list.result?.tools?.length === 2 &&
+        list.result.tools.some((t) => t.name === "grid_status") &&
+        list.result.tools.some((t) => t.name === "grid_element_values"),
+    );
+
+    // grid_status: broadcast script goes out, two fake modules answer.
+    editorMsgs.length = 0;
+    const statusPromise = mcpPost({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "grid_status", arguments: {} },
+    });
+    let modMsg;
+    for (let i = 0; i < 20 && !modMsg; i++) {
+      await sleep(50);
+      modMsg = editorMsgs.find(
+        (m) => m.type === "execute-lua-script" && /"mod"/.test(m.script),
+      );
+    }
+    check(
+      "grid_status broadcasts an immediate script",
+      !!modMsg && modMsg.targetDx === undefined,
+    );
+    const statusId = /"ctx","([a-z0-9]+)"/.exec(modMsg?.script ?? "")?.[1];
+    await pkg.sendMessage(["ctx", statusId, "mod", 0, 0, 1, 16]);
+    await pkg.sendMessage(["ctx", statusId, "mod", 1, 0, 1, 10]);
+    const statusOut = await (await statusPromise).json();
+    const statusText = statusOut.result?.content?.[0]?.text ?? "";
+    check(
+      "grid_status reports both replying modules",
+      /2 connected module/.test(statusText) &&
+        /dx=0, dy=0: 16 elements/.test(statusText) &&
+        /dx=1, dy=0: 10 elements/.test(statusText),
+    );
+
+    // grid_element_values: targeted script, one module answers, the
+    // compact wire format unpacks into readable lines.
+    editorMsgs.length = 0;
+    const valPromise = mcpPost({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "grid_element_values", arguments: { dx: 1, dy: 0 } },
+    });
+    let valMsg;
+    for (let i = 0; i < 20 && !valMsg; i++) {
+      await sleep(50);
+      valMsg = editorMsgs.find(
+        (m) => m.type === "execute-lua-script" && /"val"/.test(m.script),
+      );
+    }
+    check(
+      "grid_element_values targets the module",
+      !!valMsg && valMsg.targetDx === 1 && valMsg.targetDy === 0,
+    );
+    const valId = /"ctx","([a-z0-9]+)"/.exec(valMsg?.script ?? "")?.[1];
+    await pkg.sendMessage(["ctx", valId, "val", 1, 0, "0ep=64;1b=127;2s=-;"]);
+    const valOut = await (await valPromise).json();
+    const valText = valOut.result?.content?.[0]?.text ?? "";
+    check(
+      "element values unpack with types and values",
+      /element 0 \(endless\): 64/.test(valText) &&
+        /element 1 \(button\): 127/.test(valText) &&
+        /element 2 \(system\/screen\)/.test(valText),
+    );
+
+    const badTool = await (
+      await mcpPost({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "no_such_tool", arguments: {} },
+      })
+    ).json();
+    check("unknown tool returns a JSON-RPC error", badTool.error?.code === -32602);
+
+    // A module that never answers surfaces as an honest no-reply text.
+    const silent = await (
+      await mcpPost({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "grid_element_values", arguments: { dx: 9, dy: 9 } },
+      })
+    ).json();
+    check(
+      "silent module reported honestly",
+      /No module at dx=9, dy=9 replied/.test(
+        silent.result?.content?.[0]?.text ?? "",
+      ),
+    );
+
+    // The claude spawn now carries the MCP wiring.
+    async function mcpArgsOf() {
+      port.received.length = 0;
+      process.env.MOCK_MODE = "args";
+      port.emit({ type: "chat", prompt: "argdump" });
+      await waitFor(port, "chat-done", 5000);
+      process.env.MOCK_MODE = "ok";
+      const text = port.received
+        .filter((m) => m.type === "chat-chunk")
+        .map((m) => m.text)
+        .join("");
+      return JSON.parse(text.replace(/^ARGS:/, ""));
+    }
+    const mcpArgs = await mcpArgsOf();
+    const mcpConfigArg = mcpArgs[mcpArgs.indexOf("--mcp-config") + 1] ?? "";
+    check(
+      "spawn passes --mcp-config with the loopback server",
+      mcpArgs.includes("--mcp-config") &&
+        mcpArgs.includes("--strict-mcp-config") &&
+        mcpConfigArg.includes(`127.0.0.1:${mcp.port}`) &&
+        mcpConfigArg.includes(mcp.token),
+    );
+    check(
+      "live tools allowlisted and named in the system prompt",
+      mcpArgs.some((a) => /mcp__grid__grid_status/.test(a)) &&
+        mcpArgs.some((a) => /grid_element_values reads the current value/.test(a)),
+    );
   }
 
+  const portBeforeUnload = pkg._mcpInfo().port;
   await pkg.unloadPackage();
+  if (!real && portBeforeUnload > 0) {
+    const closed = await fetch(`http://127.0.0.1:${portBeforeUnload}/mcp`, {
+      method: "POST",
+      body: "{}",
+    }).then(
+      () => false,
+      () => true,
+    );
+    check("unload closes the mcp server", closed);
+  }
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => {

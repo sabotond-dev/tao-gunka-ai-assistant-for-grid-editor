@@ -12,13 +12,23 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const http = require("http");
+const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
+
+const PKG_VERSION = (() => {
+  try {
+    return require("./package.json").version;
+  } catch (e) {
+    return "0.0.0";
+  }
+})();
 
 // The system prompt stays slim: role, honesty rules, and where the
 // real context lives. The agent reads GRID_CONTEXT.md (curated Grid
 // reference, ships with the package) and the user's saved configs
 // on demand with its own file tools.
-function buildSystemPrompt(profilesDir) {
+function buildSystemPrompt(profilesDir, liveTools) {
   const parts = [
     "You are the Grid Assistant inside Intech Studio's Grid Editor.",
     "Before answering Grid API questions, read GRID_CONTEXT.md in the",
@@ -37,9 +47,24 @@ function buildSystemPrompt(profilesDir) {
       `the Editor refreshes it.`,
     );
   }
+  if (liveTools) {
+    parts.push(
+      "Two live hardware tools are available: grid_status lists the",
+      "modules connected right now (position, page, element count) and",
+      "grid_element_values reads the current value of every element on",
+      "one module. Use them whenever the question concerns current",
+      "hardware state. They read live VALUES only - the Lua configs",
+      "stored on a module remain unreadable, and you still cannot see",
+      "the Editor UI; say so when it matters.",
+    );
+  } else {
+    parts.push(
+      "You have no live view of connected hardware or the Editor UI -",
+      "say so when it matters.",
+    );
+  }
   parts.push(
-    "You have no live view of connected hardware or the Editor UI -",
-    "say so when it matters. When the user asks you to BUILD or",
+    "When the user asks you to BUILD or",
     "CREATE something (a config, a mapping, a screen), propose real",
     "action blocks using the grid-block JSON protocol described in",
     "GRID_CONTEXT.md under 'Creating action blocks'. Answer briefly",
@@ -530,6 +555,7 @@ function runChatClaude(prompt, isRetry) {
   delete env.CLAUDE_CODE_SESSION_ID;
 
   const withProfiles = shareProfiles && profilesDir;
+  const withMcp = mcpPort > 0;
   const args = [
     ...preArgs,
     "-p",
@@ -537,14 +563,35 @@ function runChatClaude(prompt, isRetry) {
     "stream-json",
     "--verbose",
     // Read-only file tools auto-approve so the agent can consult
-    // GRID_CONTEXT.md and the user's configs without permission stalls.
+    // GRID_CONTEXT.md and the user's configs without permission stalls;
+    // the two live-context MCP tools are read-only snapshots too.
     "--allowedTools",
-    "Read,Glob,Grep",
+    "Read,Glob,Grep" +
+      (withMcp
+        ? ",mcp__grid__grid_status,mcp__grid__grid_element_values"
+        : ""),
     "--append-system-prompt",
-    buildSystemPrompt(withProfiles ? profilesDir : undefined),
+    buildSystemPrompt(withProfiles ? profilesDir : undefined, withMcp),
   ];
   if (withProfiles) {
     args.push("--add-dir", profilesDir);
+  }
+  if (withMcp) {
+    // Inline JSON config; --strict-mcp-config keeps the user's own MCP
+    // servers out of what is effectively an embedded product.
+    args.push(
+      "--mcp-config",
+      JSON.stringify({
+        mcpServers: {
+          grid: {
+            type: "http",
+            url: `http://127.0.0.1:${mcpPort}/mcp`,
+            headers: { Authorization: `Bearer ${mcpToken}` },
+          },
+        },
+      }),
+      "--strict-mcp-config",
+    );
   }
   const resumingFrom = lastSessionId;
   if (resumingFrom) {
@@ -951,6 +998,283 @@ function relayValue(key, value) {
   }, RELAY_MIN_MS);
 }
 
+// --- Live context (MCP) ----------------------------------------------
+// A minimal MCP server over streamable HTTP, hand-rolled on Node's
+// http module (packages ship without node_modules). It serves two
+// read-only tools backed by immediate-Lua round trips: the package
+// pushes a script to the modules (execute-lua-script) and each module
+// answers through gps("package-grid-agent","ctx",...), which lands in
+// exports.sendMessage below. Loopback only, bearer token per load, so
+// no other local process can drive the editor bridge.
+
+let mcpServer;
+let mcpPort = 0;
+let mcpToken = "";
+
+let ctxSeq = 0;
+const pendingCtx = new Map(); // id -> {replies, resolve, timer, single}
+
+// Runs one round trip: send the script (broadcast unless targeted),
+// gather module replies until the window closes - or resolve on the
+// first reply when `single` (targeted queries have one answerer).
+function ctxRequest({ script, targetDx, targetDy, windowMs, single }) {
+  return new Promise((resolve) => {
+    if (!controller || packageShutDown) {
+      resolve(undefined);
+      return;
+    }
+    const id =
+      "c" + (ctxSeq++).toString(36) + crypto.randomBytes(2).toString("hex");
+    const entry = { replies: [], resolve, single };
+    entry.timer = setTimeout(() => {
+      pendingCtx.delete(id);
+      resolve(entry.replies);
+    }, windowMs);
+    pendingCtx.set(id, entry);
+    const msg = { type: "execute-lua-script", script: script(id) };
+    if (typeof targetDx === "number" && typeof targetDy === "number") {
+      msg.targetDx = targetDx;
+      msg.targetDy = targetDy;
+    }
+    controller.sendMessageToEditor(msg);
+  });
+}
+
+function ctxReply(args) {
+  const entry = pendingCtx.get(String(args[1]));
+  if (!entry) return;
+  entry.replies.push(args.slice(2));
+  if (entry.single) {
+    clearTimeout(entry.timer);
+    pendingCtx.delete(String(args[1]));
+    entry.resolve(entry.replies);
+  }
+}
+
+// The module-side scripts. Kept tiny: immediate scripts ride a single
+// protocol packet. `element[i]` is the editor-blessed handle table
+// (its own widgets read cross-element values through it); probing the
+// method (e.pva and e:pva()) is the runtime-safe way to type-detect.
+const modInfoScript = (id) =>
+  `gps("package-grid-agent","ctx","${id}","mod",gmx(),gmy(),gpc(),gec())`;
+const elementValuesScript = (id) =>
+  `local r="" for i=0,gec()-1 do local e=element[i] if e then ` +
+  `local v=(e.epva and e:epva()) or (e.eva and e:eva()) or ` +
+  `(e.pva and e:pva()) or (e.bva and e:bva()) ` +
+  `local t=(e.epva and "ep") or (e.eva and "e") or (e.pva and "p") ` +
+  `or (e.bva and "b") or "s" ` +
+  `r=r..i..t.."="..tostring(v or "-")..";" end end ` +
+  `gps("package-grid-agent","ctx","${id}","val",gmx(),gmy(),r)`;
+
+const ELEMENT_TYPE_NAMES = {
+  ep: "endless",
+  e: "encoder",
+  p: "potmeter",
+  b: "button",
+  s: "system/screen",
+};
+
+async function toolGridStatus() {
+  const replies = await ctxRequest({ script: modInfoScript, windowMs: 700 });
+  if (replies === undefined) {
+    return "The editor connection is not available, so live hardware cannot be queried.";
+  }
+  const mods = replies.filter((r) => String(r[0]) === "mod");
+  if (mods.length === 0) {
+    return (
+      "No connected module replied within 700 ms - either no Grid " +
+      "modules are connected, or immediate Lua is unavailable right " +
+      "now. The user's saved config files on disk are still readable."
+    );
+  }
+  const lines = mods.map(
+    (r) =>
+      `- module at dx=${r[1]}, dy=${r[2]}: ${r[4]} elements, active page ${r[3]}`,
+  );
+  return (
+    `${mods.length} connected module(s) replied just now:\n` +
+    lines.join("\n") +
+    "\nUse grid_element_values with a module's dx and dy to read its current element values."
+  );
+}
+
+async function toolGridElementValues(dx, dy) {
+  const replies = await ctxRequest({
+    script: elementValuesScript,
+    targetDx: dx,
+    targetDy: dy,
+    windowMs: 900,
+    single: true,
+  });
+  if (replies === undefined) {
+    return "The editor connection is not available, so live hardware cannot be queried.";
+  }
+  const val = replies.find((r) => String(r[0]) === "val");
+  if (!val) {
+    return (
+      `No module at dx=${dx}, dy=${dy} replied within 900 ms. ` +
+      "Check the positions with grid_status first."
+    );
+  }
+  const lines = [];
+  const re = /(\d+)(ep|e|p|b|s)=([^;]*);/g;
+  let m;
+  while ((m = re.exec(String(val[3]))) !== null) {
+    const kind = ELEMENT_TYPE_NAMES[m[2]] ?? m[2];
+    const value = m[3] === "-" ? "no value (not a value element)" : m[3];
+    lines.push(`- element ${m[1]} (${kind}): ${value}`);
+  }
+  if (lines.length === 0) {
+    return `The module at dx=${dx}, dy=${dy} replied but reported no elements.`;
+  }
+  return (
+    `Live element values from the module at dx=${val[1]}, dy=${val[2]} ` +
+    `(0..127, snapshot taken just now):\n` +
+    lines.join("\n")
+  );
+}
+
+const MCP_TOOLS = [
+  {
+    name: "grid_status",
+    description:
+      "List the Grid modules connected right now: chain position " +
+      "(dx, dy), element count, and the active page. Live hardware " +
+      "query answered by the modules themselves.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "grid_element_values",
+    description:
+      "Read the current value (0..127) of every element on one " +
+      "connected module, addressed by the dx and dy reported by " +
+      "grid_status. Live hardware query.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dx: { type: "integer", description: "module chain position x" },
+        dy: { type: "integer", description: "module chain position y" },
+      },
+      required: ["dx", "dy"],
+      additionalProperties: false,
+    },
+  },
+];
+
+async function mcpDispatch(rpc) {
+  const reply = (result) => ({ jsonrpc: "2.0", id: rpc.id, result });
+  switch (rpc.method) {
+    case "initialize":
+      return reply({
+        protocolVersion: rpc.params?.protocolVersion || "2025-03-26",
+        capabilities: { tools: {} },
+        serverInfo: { name: "tao-gunka-grid", version: PKG_VERSION },
+      });
+    case "ping":
+      return reply({});
+    case "tools/list":
+      return reply({ tools: MCP_TOOLS });
+    case "tools/call": {
+      const name = rpc.params?.name;
+      const args = rpc.params?.arguments ?? {};
+      let text;
+      if (name === "grid_status") {
+        text = await toolGridStatus();
+      } else if (name === "grid_element_values") {
+        text = await toolGridElementValues(
+          Number(args.dx) || 0,
+          Number(args.dy) || 0,
+        );
+      } else {
+        return {
+          jsonrpc: "2.0",
+          id: rpc.id,
+          error: { code: -32602, message: `Unknown tool: ${name}` },
+        };
+      }
+      return reply({ content: [{ type: "text", text }] });
+    }
+    default:
+      return {
+        jsonrpc: "2.0",
+        id: rpc.id,
+        error: { code: -32601, message: `Method not found: ${rpc.method}` },
+      };
+  }
+}
+
+function startMcpServer() {
+  if (mcpServer) return;
+  mcpToken = crypto.randomBytes(16).toString("hex");
+  mcpServer = http.createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${mcpToken}`) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, { Allow: "POST" });
+      res.end();
+      return;
+    }
+    let raw = "";
+    req.on("data", (d) => {
+      raw += d;
+      if (raw.length > 65536) req.destroy();
+    });
+    req.on("end", async () => {
+      let rpc;
+      try {
+        rpc = JSON.parse(raw);
+      } catch (e) {
+        res.writeHead(400);
+        res.end();
+        return;
+      }
+      // Notifications get acknowledged and nothing more.
+      if (rpc.id === undefined || rpc.id === null) {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      try {
+        const out = await mcpDispatch(rpc);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpc.id,
+            error: { code: -32603, message: String(e?.message ?? e) },
+          }),
+        );
+      }
+    });
+  });
+  mcpServer.listen(0, "127.0.0.1", () => {
+    mcpPort = mcpServer.address().port;
+  });
+}
+
+function stopMcpServer() {
+  for (const entry of pendingCtx.values()) {
+    clearTimeout(entry.timer);
+    entry.resolve(undefined);
+  }
+  pendingCtx.clear();
+  try {
+    mcpServer?.close();
+  } catch (e) {}
+  mcpServer = undefined;
+  mcpPort = 0;
+  mcpToken = "";
+}
+
+// Harness hook: lets the tests reach the loopback server.
+exports._mcpInfo = () => ({ port: mcpPort, token: mcpToken });
+
 // --- Sign-in from the panel ------------------------------------------
 // codex login does all its interaction in the browser, so a plain
 // spawn is a one-click sign-in. Claude's /login is an interactive TUI:
@@ -1069,6 +1393,7 @@ exports.loadPackage = async function (gridController, persistedData) {
   }
   profilesDir = findProfilesDir();
   writeContextFiles();
+  startMcpServer();
 };
 
 exports.unloadPackage = async function () {
@@ -1084,6 +1409,7 @@ exports.unloadPackage = async function () {
   }
   relayState.clear();
   removeConfigMirror();
+  stopMcpServer();
   chatPort?.close();
 };
 
@@ -1164,5 +1490,7 @@ exports.sendMessage = async function (args) {
   if (!Array.isArray(args)) return;
   if (args[0] === "relay") {
     relayValue(args[1], Number(args[2]));
+  } else if (args[0] === "ctx") {
+    ctxReply(args);
   }
 };

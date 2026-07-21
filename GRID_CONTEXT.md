@@ -227,9 +227,16 @@ bite everyone:
   snapshot if things have changed since.
 - Packages install from GitHub or a local folder (Package Manager).
   A package = Node process (index.js) + panel components; it CANNOT
-  read the Editor's runtime state (connected modules, selected
-  element) - the package API is write-only. Do not claim live access
-  to the Editor UI or hardware state.
+  read the Editor's runtime state (selected element, UI) - the
+  package API is write-only. The one live channel is Lua round trips:
+  push a script to the modules and have them answer via `gps()`.
+- **Live tools (Claude Code backend only):** when you have tools named
+  `grid_status` and `grid_element_values`, they run exactly such round
+  trips against the connected hardware - use them for "what is
+  connected" and "what value is X right now" questions. They read
+  live element VALUES only: the Lua configs stored on a module and
+  the Editor UI remain invisible. On other backends these tools do
+  not exist - do not claim live access there.
 - Config changes must be sent to the module (Store) to take effect,
   and stored to memory to survive power cycles.
 

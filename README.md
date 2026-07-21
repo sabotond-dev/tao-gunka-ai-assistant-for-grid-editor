@@ -23,6 +23,11 @@ server of its own, and adds no cost beyond what you already run.
   and it opens the file instead of asking you to paste anything. A
   toggle in the panel controls this, and shows exactly how many files
   it covers.
+- **Sees your live hardware** (Claude Code backend). Ask what is
+  connected or what a knob reads right now and the assistant queries
+  the modules themselves: positions, active page, and every element's
+  current value. Values only - the config stored on a module still
+  cannot be read back, and the assistant says so.
 - **Builds action blocks.** Describe what you want; the assistant
   proposes blocks as cards in the chat. One click adds each block to
   the Editor's action picker, you place it on the element it names,
@@ -75,7 +80,9 @@ One honest limit: the files are your last saved snapshots. The config
 currently stored on a module lives on the module, and nothing on disk
 mirrors it. When you want the assistant to see your latest state,
 save the profile first; the assistant will tell you how old a
-snapshot is when it matters.
+snapshot is when it matters. On the Claude Code backend the assistant
+can at least read the live element values off the connected modules -
+but values are not configs, and it knows the difference.
 
 ## How it works
 
@@ -85,7 +92,11 @@ panel. Agent-created blocks are registered through the Editor's
 package API and behave like any other block. Value routing uses a
 small relay: source blocks report through the package, and every
 module sees the value as a `ga_<key>` Lua global for display blocks
-to read. The full reference the agents work from is
+to read. Live hardware queries run the same road in reverse: the
+package hosts a loopback-only MCP server (bearer-token protected,
+started and stopped with the package), pushes a short Lua script to
+the modules, and the modules answer through the package channel. The
+full reference the agents work from is
 [GRID_CONTEXT.md](GRID_CONTEXT.md).
 
 ## The name
