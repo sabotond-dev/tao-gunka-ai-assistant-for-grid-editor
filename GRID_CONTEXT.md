@@ -44,6 +44,136 @@ different configs; packages can switch pages via the editor.
   coarse for fine parameter rides on endless knobs (use step deltas).
 - `self:get_auto_mode()` - the element's mode setting.
 
+## The Lua environment: what exists and what does not
+
+Grid firmware Lua is a restricted environment. **There is no `os`, no
+`io`, no `require`, no `midi` table and no clock function.** Anything
+like `os.clock()`, `os.time()` or `midi.send()` is invented and will
+not run. `math.*` and basic string operations exist. Timing is done
+with element timers and elapsed-time getters (below), never with
+clocks.
+
+Two kinds of functions:
+
+- **Element methods**, called on `self` (or another element handle):
+  `self:bst()`, `self:gms(...)`, `self:glc(...)`, `self:ind()` ...
+- **Module-level globals**, called bare: `gtt(...)`, `gtp(...)`,
+  `gks(...)`, `gps(...)`, `glim(...)`, `gpl(...)` ...
+
+## MIDI: self:gms()
+
+`self:gms(channel, command, param1, param2)` sends one MIDI message.
+`-1` for any argument means "use this element's default" (the
+auto-channel / auto-CC the editor assigns). Examples:
+
+- CC 7 value 100 on channel 0: `self:gms(0, 176, 7, 100)`
+- Note on 60 vel 127: `self:gms(0, 144, 60, 127)`
+- Element defaults with a fixed value: `self:gms(-1, -1, -1, 127)`
+
+SysEx: `gmss(0xF0, ..., 0xF7)`. There is no other MIDI send API.
+
+## Timers and elapsed time (the only clocks)
+
+- `gtt(self:ind(), ms)` arms this element's timer; after `ms`
+  milliseconds the element's **Timer event** fires once.
+- `gtp(self:ind())` disarms it.
+- `self:bel()` milliseconds since the button's last state change
+  (encoders: `self:eel()`, potmeters: `self:pel()`).
+
+Long press, double press, delays: ALWAYS built from these. Inside the
+Timer event, `self:bst() > 0` tells you whether the button is still
+held, which is how one timer serves several roles.
+
+## Frequently used functions (official short names)
+
+- Values: `self:bva()` button value, `self:eva()` encoder value,
+  `self:pva()` potmeter value, `self:epva()` endless value,
+  `self:bstp()` button steps, min/max: `bmi/bma`, `emi/ema`, `pmi/pma`
+- Element info: `self:ind()` element index, `gen()` element name,
+  `gec()` element count, `gmx()/gmy()` module position
+- Pages: `gpc()` current, `gpl(n)` load, `gpn()` next, `gpp()` prev
+- LEDs: `self:glc(layer, {{r,g,b,1}})` color,
+  `self:glp(layer, intensity)` value (0..255), `gls` animation type,
+  `glf` rate, `glt` timeout
+- Helpers: `glim(value,min,max)` clamp, `gmaps(...)` map+saturate,
+  `grnd()` random 0..255, `sgn(x)` sign, `glut` lookup table
+- Output: `self:gms` MIDI, `gks` keyboard, `gmbs/gmms` mouse,
+  `ggbs/ggms` gamepad, `gps` package message
+
+## Recipes (tested shapes; adapt values, keep the structure)
+
+**Momentary CC** (Button event):
+`self:gms(-1, 176, -1, self:bva())`
+
+**Toggle** (Button event, edge-latched):
+```
+if self:bst() > 0 then
+  if self.f ~= 1 then self.f = 1
+    self.on = 1 - (self.on or 0)
+    self:gms(-1, 176, -1, self.on * 127)
+  end
+else self.f = 0 end
+```
+
+**Long press vs short press** - two blocks, same element:
+
+Button event:
+```
+if self:bst() > 0 then
+  self.lp = 0
+  gtt(self:ind(), 1000)      -- arm long-press timer
+else
+  gtp(self:ind())
+  if self.lp ~= 1 then
+    self:gms(0, 176, 0, 127) -- short press (on release)
+  end
+end
+```
+Timer event:
+```
+if self:bst() > 0 then
+  self.lp = 1
+  self:gms(1, 176, 0, 127)   -- long press fires while still held
+end
+```
+
+**Short / long / double press** - the full pattern. One timer serves
+both the long-press deadline (armed on press) and the double-press
+window (armed on release); the Timer event tells them apart with
+`bst()`:
+
+Button event:
+```
+if self:bst() > 0 then
+  self.lp = 0
+  gtt(self:ind(), 1000)          -- long-press deadline
+else
+  gtp(self:ind())
+  if self.lp ~= 1 then
+    if self.dw == 1 then
+      self.dw = 0
+      self:gms(2, 176, 0, 127)   -- double press
+    else
+      self.dw = 1
+      gtt(self:ind(), 300)       -- double window; expiry = single
+    end
+  end
+end
+```
+Timer event:
+```
+if self:bst() > 0 then
+  self.lp = 1
+  self:gms(1, 176, 0, 127)       -- long press
+else
+  self.dw = 0
+  self:gms(0, 176, 0, 127)       -- window expired: single press
+end
+```
+Note the inherent tradeoff: the single fires one window (300 ms)
+after release, because that is how long it takes to know a double is
+not coming. Say so when proposing this.
+
 ## Keyboard output: gks()
 
 `gks(delay, t1, t2, t3, ...)` sends USB keystrokes from the module.

@@ -372,11 +372,20 @@ function localSystemMessage() {
 }
 
 let activeLocalAbort;
+// Whether the server speaks Ollama's native /api/chat (bigger context
+// window, thinking toggle). undefined = not probed yet; false = plain
+// OpenAI-compatible (KoboldCpp, LM Studio, ...).
+let localNativeOk;
 
-function runChatLocal(prompt) {
+async function runChatLocal(prompt) {
   stopActiveChat();
   const abort = new AbortController();
   activeLocalAbort = abort;
+  let timedOut = false;
+  const killTimer = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, CHAT_TIMEOUT_MS);
   toPanel({ type: "chat-start" });
 
   const messages = [{ role: "system", content: localSystemMessage() }];
@@ -386,25 +395,67 @@ function runChatLocal(prompt) {
   }
   messages.push({ role: "user", content: prompt });
 
-  const url = localUrl.replace(/\/+$/, "") + "/chat/completions";
-  const killTimer = setTimeout(() => abort.abort(), CHAT_TIMEOUT_MS);
+  const base = localUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
   let fullText = "";
+  let lastUrl = "";
 
-  fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: localModel || "local",
-      messages,
-      stream: true,
-    }),
-    signal: abort.signal,
-  })
-    .then(async (res) => {
+  // Identify Ollama by its version endpoint once; a 200 on /api/chat
+  // alone is not proof (other servers answer any path).
+  if (localNativeOk === undefined) {
+    try {
+      const probe = await fetch(`${base}/api/version`, {
+        signal: abort.signal,
+      });
+      localNativeOk = probe.ok;
+    } catch (e) {
+      /* unreachable now: leave undefined, the main call reports it */
+    }
+  }
+
+  // Ollama's OpenAI endpoint is stuck at the model's default context
+  // (4k for most), which the Grid reference alone can overflow, and it
+  // cannot switch off thinking mode - both of which made a 12B model
+  // look broken. The native endpoint fixes both; anything that 404s it
+  // gets the standard OpenAI path.
+  const attempts = [];
+  if (localNativeOk === true) {
+    attempts.push({
+      native: true,
+      url: `${base}/api/chat`,
+      body: {
+        model: localModel || "local",
+        messages,
+        stream: true,
+        think: false,
+        options: { num_ctx: 8192 },
+      },
+    });
+  }
+  attempts.push({
+    native: false,
+    url: `${base}/v1/chat/completions`,
+    body: { model: localModel || "local", messages, stream: true },
+  });
+
+  try {
+    for (const attempt of attempts) {
+      lastUrl = attempt.url;
+      const res = await fetch(attempt.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(attempt.body),
+        signal: abort.signal,
+      });
+      if (attempt.native && (res.status === 404 || res.status === 405)) {
+        localNativeOk = false;
+        continue; // not Ollama: use the OpenAI path
+      }
       if (!res.ok) {
         const body = (await res.text()).slice(0, 300);
         throw new Error(`${res.status}: ${body}`);
       }
+      if (attempt.native) localNativeOk = true;
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -418,8 +469,10 @@ function runChatLocal(prompt) {
           const data = line.replace(/^data:\s*/, "").trim();
           if (!data || data === "[DONE]") continue;
           try {
-            const delta =
-              JSON.parse(data).choices?.[0]?.delta?.content ?? "";
+            const parsed = JSON.parse(data);
+            const delta = attempt.native
+              ? (parsed.message?.content ?? "")
+              : (parsed.choices?.[0]?.delta?.content ?? "");
             if (delta) {
               fullText += delta;
               toPanel({ type: "chat-chunk", text: delta });
@@ -429,33 +482,40 @@ function runChatLocal(prompt) {
           }
         }
       }
-      if (fullText) {
-        rememberTurn(prompt, fullText);
-        toPanel({ type: "chat-done" });
-      } else {
+      break; // streamed to completion
+    }
+    if (fullText) {
+      rememberTurn(prompt, fullText);
+      toPanel({ type: "chat-done" });
+    } else {
+      toPanel({
+        type: "chat-error",
+        message: "The local model returned nothing",
+      });
+    }
+  } catch (e) {
+    if (abort.signal.aborted) {
+      if (fullText) rememberTurn(prompt, fullText);
+      if (timedOut) {
         toPanel({
           type: "chat-error",
-          message: "The local model returned nothing",
+          message: "Local model timed out (5 min)",
         });
       }
-    })
-    .catch((e) => {
-      if (abort.signal.aborted) {
-        if (fullText) rememberTurn(prompt, fullText);
-        return; // user Stop or timeout already reported
-      }
+      // otherwise: user Stop, already handled by the panel
+    } else {
       toPanel({
         type: "chat-error",
         message:
-          `Cannot reach ${url} (${String(e.message).slice(0, 160)}). ` +
+          `Cannot reach ${lastUrl} (${String(e.message).slice(0, 160)}). ` +
           "Is the local server running? Set the URL and model in the " +
           "panel.",
       });
-    })
-    .finally(() => {
-      clearTimeout(killTimer);
-      if (activeLocalAbort === abort) activeLocalAbort = undefined;
-    });
+    }
+  } finally {
+    clearTimeout(killTimer);
+    if (activeLocalAbort === abort) activeLocalAbort = undefined;
+  }
 }
 
 function runChatClaude(prompt, isRetry) {
@@ -1069,6 +1129,7 @@ exports.addMessagePort = async function (port, senderId) {
     } else if (msg?.type === "set-local-config") {
       if (typeof msg.url === "string" && msg.url.trim()) {
         localUrl = msg.url.trim();
+        localNativeOk = undefined; // new server: re-detect Ollama
       }
       if (typeof msg.model === "string") {
         localModel = msg.model.trim();
