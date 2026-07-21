@@ -1,3 +1,5 @@
+![Tao Gunka - an AI assistant for Grid Editor](.github/banner.png)
+
 # Tao Gunka - An AI Assistant Package for Grid Editor
 
 An AI assistant that lives inside the Grid Editor and actually knows

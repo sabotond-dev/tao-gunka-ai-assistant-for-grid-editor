@@ -43,6 +43,8 @@ jobs:
           tag_name: ${{ needs.read-package-json.outputs.package_version}}
           release_name: Release ${{ needs.read-package-json.outputs.package_version}}
           body: |
+            ![Tao Gunka](https://raw.githubusercontent.com/sabotond-dev/tao-gunka-ai-assistant-for-grid-editor/main/.github/banner.png)
+
             Release of Tao Gunka, the AI assistant package for the Grid Editor
           draft: false
           prerelease: false
