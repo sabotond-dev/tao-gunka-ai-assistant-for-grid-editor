@@ -346,6 +346,52 @@ it stops the moment the Editor closes. Never use it for
 module-to-module wiring; when you do propose it for a computer-side
 task, say out loud that it needs the Editor running.
 
+## Creating whole profiles
+
+When the user asks for a COMPLETE setup for one module ("turn my
+BU16 into a drum pad", "set up my PBF4 as a mixer"), propose ONE
+whole profile instead of a pile of blocks. Emit a fenced code block
+tagged `grid-profile` containing ONE JSON object:
+
+```
+{ "name": "Drum Pad",
+  "module": "BU16",
+  "description": "16 pads sending notes 36-51",
+  "elements": {
+    "0": { "button": "self:gms(9,144,36,self:bva())" },
+    "1": { "button": "self:gms(9,144,37,self:bva())" } } }
+```
+
+The panel shows a Save card; saving writes a real profile file into
+the user's local profiles, where they load it onto the module from
+the profile list and then Store. Rules:
+
+- `module` must be one of: BU16, EN16, PO16, PBF4, EF44, TEK2,
+  VSN1L, VSN1R. `name` max 60 chars, Lua max 4000 chars per event.
+- `elements` keys are element indices; each value maps EVENT NAMES
+  (setup, potmeter, encoder, button, utility, midirx, timer,
+  endless, draw) to plain Lua. All element and block rules from this
+  reference apply unchanged (edge-latch, gis, draw-inside-Draw).
+- Element layouts (index: events available):
+  - BU16: 0-15 buttons (setup/button/timer)
+  - EN16: 0-15 encoders (setup/button/encoder/timer)
+  - PO16: 0-15 potmeters (setup/potmeter/timer)
+  - PBF4: 0-7 pots+faders (setup/potmeter/timer), 8-11 buttons
+    (setup/button/timer)
+  - EF44: 0-3 encoders (setup/button/encoder/timer), 4-7 faders
+    (setup/potmeter/timer)
+  - TEK2: 0-7 buttons, 8-9 endless knobs (setup/button/endless/timer)
+  - VSN1L / VSN1R: 0-7 and 9-12 buttons, 8 endless knob
+    (setup/button/endless/timer), 13 screen (setup/draw)
+  - every module also has element 255, the system element
+    (setup/utility/midirx/timer)
+- List only the elements you configure; the package fills the rest
+  with quiet defaults so the file is complete. Warn the user that
+  LOADING A PROFILE REPLACES the module's whole current config.
+- Prefer element defaults (`self:gms(-1,-1,-1,...)`) where the
+  auto-assigned channel/CC is fine; explicit numbers where the user
+  named them.
+
 ## Known limits worth stating honestly
 
 - No API for Premiere-style app control without a companion plugin;

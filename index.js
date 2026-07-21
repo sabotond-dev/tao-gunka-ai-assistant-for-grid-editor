@@ -67,7 +67,9 @@ function buildSystemPrompt(profilesDir, liveTools) {
     "When the user asks you to BUILD or",
     "CREATE something (a config, a mapping, a screen), propose real",
     "action blocks using the grid-block JSON protocol described in",
-    "GRID_CONTEXT.md under 'Creating action blocks'. Proposed blocks",
+    "GRID_CONTEXT.md under 'Creating action blocks' - or, when the",
+    "user wants a COMPLETE setup for a whole module, one grid-profile",
+    "as described under 'Creating whole profiles'. Proposed blocks",
     "must keep working with the Editor closed: module-to-module values",
     "go over gis(), never through this package's relay, which is",
     "reserved for computer-side integrations and must be flagged as",
@@ -81,12 +83,9 @@ function buildSystemPrompt(profilesDir, liveTools) {
 // The user's saved configs (stable editor writes them here). Checked
 // at load; the panel toggle controls whether the agent may read them.
 function findProfilesDir() {
-  const dir = path.join(
-    os.homedir(),
-    "Documents",
-    "grid-userdata",
-    "configs",
-  );
+  const dir =
+    process.env.GRID_AGENT_PROFILES_DIR ??
+    path.join(os.homedir(), "Documents", "grid-userdata", "configs");
   try {
     return fs.statSync(dir).isDirectory() ? dir : undefined;
   } catch (e) {
@@ -1089,6 +1088,183 @@ function deleteAgentBlock(short) {
   persistBlocks();
 }
 
+// --- Whole profiles ---------------------------------------------------
+// The agent can propose a complete module profile; saving writes a
+// file in the exact shape the editor's own save produces (verified
+// against real saved profiles and the editor's shipped defaults), so
+// it appears in the profile list like any hand-made one and loads
+// onto a module through the normal UI.
+
+// Element layout per module type, extracted from the editor's shipped
+// per-module default profiles: element index -> allowed events.
+// Event numbers: 0 setup, 1 potmeter, 2 encoder, 3 button,
+// 4 utility, 5 midirx, 6 timer, 7 endless, 8 draw.
+const EVENT_NUMBERS = {
+  setup: 0,
+  potmeter: 1,
+  encoder: 2,
+  button: 3,
+  utility: 4,
+  midirx: 5,
+  timer: 6,
+  endless: 7,
+  draw: 8,
+};
+
+function range(n, events) {
+  const out = {};
+  for (let i = 0; i < n; i++) out[i] = events;
+  return out;
+}
+
+const MODULE_LAYOUTS = {
+  BU16: { ...range(16, [0, 3, 6]), 255: [0, 4, 5, 6] },
+  EN16: { ...range(16, [0, 3, 2, 6]), 255: [0, 4, 5, 6] },
+  PO16: { ...range(16, [0, 1, 6]), 255: [0, 4, 5, 6] },
+  PBF4: {
+    ...range(8, [0, 1, 6]),
+    8: [0, 3, 6],
+    9: [0, 3, 6],
+    10: [0, 3, 6],
+    11: [0, 3, 6],
+    255: [0, 4, 5, 6],
+  },
+  EF44: {
+    0: [0, 3, 2, 6],
+    1: [0, 3, 2, 6],
+    2: [0, 3, 2, 6],
+    3: [0, 3, 2, 6],
+    4: [0, 1, 6],
+    5: [0, 1, 6],
+    6: [0, 1, 6],
+    7: [0, 1, 6],
+    255: [0, 4, 5, 6],
+  },
+  TEK2: {
+    ...range(8, [0, 3, 6]),
+    8: [0, 3, 7, 6],
+    9: [0, 3, 7, 6],
+    255: [0, 4, 5, 6],
+  },
+  VSN1L: {
+    ...range(8, [0, 3, 6]),
+    8: [0, 3, 7, 6],
+    9: [0, 3, 6],
+    10: [0, 3, 6],
+    11: [0, 3, 6],
+    12: [0, 3, 6],
+    13: [0, 8],
+    255: [0, 4, 5, 6],
+  },
+  VSN1R: {
+    ...range(8, [0, 3, 6]),
+    8: [0, 3, 7, 6],
+    9: [0, 3, 6],
+    10: [0, 3, 6],
+    11: [0, 3, 6],
+    12: [0, 3, 6],
+    13: [0, 8],
+    255: [0, 4, 5, 6],
+  },
+};
+
+function sanitizeProfile(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const module = String(raw.module ?? "").toUpperCase().trim();
+  const layout = MODULE_LAYOUTS[module];
+  const name = String(raw.name ?? "").trim().slice(0, 60);
+  if (!layout || !name || typeof raw.elements !== "object") return undefined;
+  const elements = {};
+  let eventCount = 0;
+  for (const [key, evs] of Object.entries(raw.elements ?? {})) {
+    const idx = Number(key);
+    if (!layout[idx] || typeof evs !== "object") continue;
+    for (const [evName, lua] of Object.entries(evs)) {
+      const evNum = EVENT_NUMBERS[String(evName).toLowerCase()];
+      if (evNum === undefined || !layout[idx].includes(evNum)) continue;
+      const code = String(lua ?? "").trim().slice(0, 4000);
+      if (!code) continue;
+      elements[idx] = elements[idx] ?? {};
+      elements[idx][evNum] = code;
+      eventCount++;
+    }
+  }
+  if (eventCount === 0) return undefined;
+  return {
+    name,
+    module,
+    description: String(raw.description ?? "").trim().slice(0, 300),
+    elements,
+  };
+}
+
+function buildProfileFile(p) {
+  const layout = MODULE_LAYOUTS[p.module];
+  const now = new Date().toISOString();
+  const configs = [];
+  for (const [idxStr, events] of Object.entries(layout)) {
+    const idx = Number(idxStr);
+    const eventList = [];
+    for (const evNum of events) {
+      const lua = p.elements[idx]?.[evNum];
+      // The --[[@cb]] marker renders the whole event as one code
+      // block in the editor; untouched events get a quiet comment so
+      // the profile fully replaces whatever was on the module before.
+      eventList.push({
+        event: evNum,
+        config: lua ? `--[[@cb]] ${lua}` : "--[[@cb]] --[[Init]]",
+      });
+    }
+    configs.push({ controlElementNumber: idx, events: eventList });
+  }
+  return {
+    id: crypto.randomUUID(),
+    modifiedAt: now,
+    name: p.name,
+    description:
+      p.description || "Created by the Grid Assistant (Tao Gunka)",
+    type: p.module,
+    version: { major: "1", minor: "6", patch: "8" },
+    configType: "profile",
+    configs,
+    createdAt: now,
+    virtualPath: "",
+  };
+}
+
+function createProfile(raw) {
+  const p = sanitizeProfile(raw);
+  if (!p) return { ok: false, error: "invalid profile" };
+  const dir = findProfilesDir();
+  if (!dir) {
+    return {
+      ok: false,
+      error:
+        "No grid-userdata configs folder found - open the editor's " +
+        "profile view once so it exists, then try again.",
+    };
+  }
+  const file = buildProfileFile(p);
+  let base = p.name.replace(/[^a-zA-Z0-9 _-]/g, "").trim() || "Agent Profile";
+  let filename = `${base}.json`;
+  for (let n = 2; fs.existsSync(path.join(dir, filename)); n++) {
+    filename = `${base} ${n}.json`;
+  }
+  try {
+    fs.writeFileSync(path.join(dir, filename), JSON.stringify(file, null, 2));
+  } catch (e) {
+    return { ok: false, error: `Could not write the file: ${e.message}` };
+  }
+  controller?.sendMessageToEditor({
+    type: "show-message",
+    message:
+      `Profile "${p.name}" saved - open your profile list, ` +
+      `load it onto the ${p.module}, then Store`,
+    messageType: "success",
+  });
+  return { ok: true, name: p.name, module: p.module, filename };
+}
+
 // --- Value relay ------------------------------------------------------
 // Generated source blocks call
 //   gps("package-grid-agent", "relay", "<key>", value)
@@ -1681,6 +1857,13 @@ exports.addMessagePort = async function (port, senderId) {
       if (BACKENDS[msg.backend]) runBackendLogin(msg.backend);
     } else if (msg?.type === "verify-login") {
       runLoginVerify();
+    } else if (msg?.type === "create-profile") {
+      const result = createProfile(msg.profile);
+      toPanel({
+        type: "profile-created",
+        requestId: msg.requestId,
+        ...result,
+      });
     } else if (msg?.type === "create-block") {
       const block = createAgentBlock(msg.block);
       toPanel({

@@ -35,6 +35,12 @@ server of its own, and adds no cost beyond what you already run.
   Grid does what they say with the Editor closed, on any computer or
   none. Cross-module values (a fader on one module, a screen on
   another) use the firmware's own module-to-module messaging.
+- **Builds whole profiles.** Ask for a complete setup ("turn my BU16
+  into a drum pad") and the assistant proposes one profile instead of
+  sixteen blocks. Saving puts a real profile file in your local
+  profile list - load it onto the module like any other profile and
+  Store. Loading replaces the module's current config, and the card
+  says so.
 - **Holds a conversation.** Follow-ups remember the thread, Stop
   interrupts a running answer, New chat starts clean. You can switch
   agents mid-conversation and the thread carries over.

@@ -202,10 +202,13 @@
     let text = raw.replace(
       /```([^\n]*)\n([\s\S]*?)(```|$)/g,
       (m, lang, body) => {
+        const tag = lang.trim();
         blocks.push(
-          /^grid-block/.test(lang.trim())
+          /^grid-block/.test(tag)
             ? `<div class="ga-proposal">Block proposal - Apply card below</div>`
-            : `<pre>${esc(body.replace(/\n$/, ""))}</pre>`,
+            : /^grid-profile/.test(tag)
+              ? `<div class="ga-proposal">Profile proposal - Save card below</div>`
+              : `<pre>${esc(body.replace(/\n$/, ""))}</pre>`,
         );
         return `\u0000${blocks.length - 1}\u0000`;
       },
@@ -523,6 +526,49 @@
       this.log.appendChild(wrap);
       this.scrollDown(true);
       return el;
+    }
+
+    // Turn grid-profile fences in a finished answer into Save cards.
+    addProfileCards(raw, afterEl) {
+      const re = /```grid-profile[^\n]*\n([\s\S]*?)```/g;
+      let m;
+      let anchor = afterEl;
+      while ((m = re.exec(raw))) {
+        let profile;
+        try {
+          profile = JSON.parse(m[1]);
+        } catch (e) {
+          continue;
+        }
+        if (!profile?.name || !profile?.module || !profile?.elements) continue;
+        const card = document.createElement("div");
+        card.className = "ga-card";
+        const name = document.createElement("div");
+        name.className = "ga-card-name";
+        name.textContent = `Profile: ${profile.name} (${profile.module})`;
+        card.appendChild(name);
+        const info = document.createElement("div");
+        info.className = "ga-card-where";
+        const els = Object.keys(profile.elements ?? {}).length;
+        info.textContent =
+          `Configures ${els} element${els === 1 ? "" : "s"}. Loading a ` +
+          `profile replaces the module's whole current config.`;
+        card.appendChild(info);
+        const btn = document.createElement("button");
+        btn.className = "ga-card-btn";
+        btn.textContent = "Save to my profiles";
+        btn.addEventListener("click", () => {
+          btn.disabled = true;
+          btn.textContent = "Saving…";
+          const requestId = ++this.cardSeq;
+          this.pendingCards.set(requestId, card);
+          this.port?.postMessage({ type: "create-profile", requestId, profile });
+        });
+        card.appendChild(btn);
+        anchor.after(card);
+        anchor = card;
+      }
+      return anchor;
     }
 
     // Turn grid-block fences in a finished answer into Apply cards.
@@ -1028,7 +1074,10 @@
         this.finish(
           msg.stopped ? "Stopped." : msg.seconds ? `${msg.seconds}s` : "",
         );
-        if (raw && anchor) this.addProposalCards(raw, anchor);
+        if (raw && anchor) {
+          const last = this.addProfileCards(raw, anchor);
+          this.addProposalCards(raw, last);
+        }
       } else if (msg.type === "chat-error") {
         const el = this.addMsg("ai", msg.message);
         el.classList.add("ga-error");
@@ -1152,6 +1201,32 @@
             el.innerHTML = renderMarkdown(turn.a);
           }
           this.scrollDown(true);
+        }
+      } else if (msg.type === "profile-created") {
+        const card = this.pendingCards.get(msg.requestId);
+        this.pendingCards.delete(msg.requestId);
+        if (card) {
+          const btn = card.querySelector(".ga-card-btn");
+          if (msg.ok) {
+            btn.disabled = true;
+            btn.textContent = "Saved";
+            const hint = document.createElement("div");
+            hint.className = "ga-card-where";
+            hint.style.marginTop = "6px";
+            hint.textContent =
+              `Saved as "${msg.filename}". Open your profile list, ` +
+              `select the ${msg.module}, load "${msg.name}" onto it, ` +
+              "and Store. This replaces the module's current config.";
+            card.appendChild(hint);
+          } else {
+            btn.disabled = false;
+            btn.textContent = "Save to my profiles";
+            const err = document.createElement("div");
+            err.className = "ga-card-where";
+            err.style.marginTop = "6px";
+            err.textContent = `Could not save: ${msg.error ?? "unknown"}`;
+            card.appendChild(err);
+          }
         }
       } else if (msg.type === "block-created") {
         const card = this.pendingCards.get(msg.requestId);

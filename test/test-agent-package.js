@@ -755,6 +755,107 @@ async function waitFor(port, type, timeoutMs) {
     );
     tagsServer.close();
 
+    // --- Whole profiles -----------------------------------------------
+    // create-profile writes a native-schema profile file into the
+    // configs dir (redirected to a temp dir for the test).
+    const os = require("os");
+    const profDir = fs.mkdtempSync(path.join(os.tmpdir(), "ga-profiles-"));
+    process.env.GRID_AGENT_PROFILES_DIR = profDir;
+    port.received.length = 0;
+    editorMsgs.length = 0;
+    port.emit({
+      type: "create-profile",
+      requestId: 91,
+      profile: {
+        name: "Test Pad",
+        module: "bu16",
+        description: "harness profile",
+        elements: {
+          0: { button: "self:gms(9,144,36,self:bva())", timer: "gtp(self:ind())" },
+          15: { button: "self:gms(9,144,51,self:bva())" },
+          99: { button: "ignored" },
+          255: { midirx: "ignored-too" },
+        },
+      },
+    });
+    await waitFor(port, "profile-created", 5000);
+    const pAck = port.received.find((m) => m.type === "profile-created");
+    check(
+      "profile-created acks with name and file",
+      pAck?.ok === true &&
+        pAck.requestId === 91 &&
+        pAck.module === "BU16" &&
+        /Test Pad\.json/.test(pAck.filename),
+    );
+    let pFile;
+    try {
+      pFile = JSON.parse(
+        fs.readFileSync(path.join(profDir, pAck.filename), "utf8"),
+      );
+    } catch (e) {}
+    const el0 = pFile?.configs?.find((c) => c.controlElementNumber === 0);
+    const el15 = pFile?.configs?.find((c) => c.controlElementNumber === 15);
+    const elSys = pFile?.configs?.find((c) => c.controlElementNumber === 255);
+    check(
+      "profile file matches the native schema",
+      pFile?.configType === "profile" &&
+        pFile.type === "BU16" &&
+        typeof pFile.id === "string" &&
+        pFile.version?.major === "1" &&
+        pFile.configs?.length === 17 &&
+        elSys?.events?.length === 4,
+    );
+    check(
+      "agent lua lands as code blocks, defaults fill the rest",
+      el0?.events.some(
+        (e) => e.event === 3 && e.config === "--[[@cb]] self:gms(9,144,36,self:bva())",
+      ) &&
+        el0.events.some((e) => e.event === 6 && /gtp/.test(e.config)) &&
+        el15?.events.some((e) => e.event === 3 && /144,51/.test(e.config)) &&
+        el0.events.some((e) => e.event === 0 && /--\[\[Init\]\]/.test(e.config)),
+    );
+    check(
+      "invalid elements are dropped, valid midirx is kept",
+      !pFile?.configs?.some((c) => c.controlElementNumber === 99) &&
+        elSys.events.some(
+          (e) => e.event === 5 && /ignored-too/.test(e.config),
+        ),
+    );
+    check(
+      "save announced via editor toast",
+      editorMsgs.some(
+        (m) => m.type === "show-message" && /Test Pad/.test(m.message),
+      ),
+    );
+    // Same name again gets a suffixed file, not an overwrite.
+    port.received.length = 0;
+    port.emit({
+      type: "create-profile",
+      requestId: 92,
+      profile: {
+        name: "Test Pad",
+        module: "BU16",
+        elements: { 0: { button: "self:gms(-1,-1,-1,127)" } },
+      },
+    });
+    await waitFor(port, "profile-created", 5000);
+    const pAck2 = port.received.find((m) => m.type === "profile-created");
+    check(
+      "name collision suffixes the filename",
+      pAck2?.ok === true && pAck2.filename === "Test Pad 2.json",
+    );
+    // Garbage in: a clean refusal, not a file.
+    port.received.length = 0;
+    port.emit({
+      type: "create-profile",
+      requestId: 93,
+      profile: { name: "Nope", module: "XY99", elements: { 0: { button: "x" } } },
+    });
+    await waitFor(port, "profile-created", 5000);
+    const pBad = port.received.find((m) => m.type === "profile-created");
+    check("unknown module type refused", pBad?.ok === false);
+    delete process.env.GRID_AGENT_PROFILES_DIR;
+
     // verify-login: the probe runs the real headless spawn shape and
     // reports the raw outcome either way.
     process.env.MOCK_MODE = "ok";
