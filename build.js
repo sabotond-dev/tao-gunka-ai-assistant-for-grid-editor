@@ -21,6 +21,8 @@ const excludedFiles = [
   ".git",
   ".gitignore",
   "node_modules",
+  "test",
+  "tools",
   "package-lock.json",
   "package-archive.zip",
   // Generated at runtime; never ship stale copies.
