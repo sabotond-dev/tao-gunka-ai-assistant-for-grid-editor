@@ -165,6 +165,49 @@ function rememberTurn(q, a) {
 // spawn directly (route through cmd.exe); on macOS and Linux they are
 // plain executables on PATH. Overrides ending in .js run under the
 // current Node (tests).
+// GUI apps on macOS (and some Linux desktops) do NOT inherit the
+// user's shell PATH - the editor sees only /usr/bin:/bin and friends,
+// while Terminal sees homebrew, npm and nvm dirs. So a bare command
+// name that works in Terminal is ENOENT here (hit live on a
+// colleague's Mac). Resolve Unix CLIs to absolute paths: known
+// install locations first, then a login-shell `command -v` as the
+// catch-all (loads .zprofile/.zshrc, so nvm and brew answer too).
+const shellWhichCache = new Map();
+function shellWhich(name) {
+  if (shellWhichCache.has(name)) return shellWhichCache.get(name);
+  let found;
+  try {
+    const shell = process.env.SHELL || "/bin/sh";
+    const r = spawnSync(shell, ["-ilc", `command -v ${name}`], {
+      timeout: 8000,
+      encoding: "utf8",
+    });
+    const line = String(r.stdout ?? "").trim().split("\n").pop();
+    if (r.status === 0 && line && line.startsWith("/")) found = line;
+  } catch (e) {
+    /* shell refused; stay unfound */
+  }
+  shellWhichCache.set(name, found);
+  return found;
+}
+
+function findUnixCli(name) {
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".claude", "local", name), // claude migrate-installer
+    path.join(home, ".local", "bin", name),
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    path.join(home, ".npm-global", "bin", name),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch (e) {}
+  }
+  return shellWhich(name);
+}
+
 function resolveNpmCli(overrideEnv, cmdName) {
   const override = process.env[overrideEnv];
   if (override) {
@@ -180,9 +223,9 @@ function resolveNpmCli(overrideEnv, cmdName) {
     }
     return { cmd: "cmd.exe", preArgs: ["/c", cmdName], found: false };
   }
-  const found =
-    spawnSync("which", [cmdName], { windowsHide: true }).status === 0;
-  return { cmd: cmdName, preArgs: [], found };
+  const found = findUnixCli(cmdName);
+  if (found) return { cmd: found, preArgs: [], found: true };
+  return { cmd: cmdName, preArgs: [], found: false };
 }
 
 // npm's presence gates the Codex path in the setup guide. One real
@@ -192,14 +235,17 @@ let npmFoundCache;
 function npmFound() {
   if (npmFoundCache === undefined) {
     try {
-      const r =
-        process.platform === "win32"
-          ? spawnSync("cmd.exe", ["/c", "npm --version"], {
-              windowsHide: true,
-              timeout: 5000,
-            })
-          : spawnSync("npm", ["--version"], { timeout: 5000 });
-      npmFoundCache = r.status === 0;
+      if (process.platform === "win32") {
+        const r = spawnSync("cmd.exe", ["/c", "npm --version"], {
+          windowsHide: true,
+          timeout: 5000,
+        });
+        npmFoundCache = r.status === 0;
+      } else {
+        // Absolute-path search: the editor's own PATH is blind to
+        // homebrew/nvm installs on macOS.
+        npmFoundCache = !!findUnixCli("npm");
+      }
     } catch (e) {
       npmFoundCache = false;
     }
@@ -243,12 +289,12 @@ async function probeLocal() {
 }
 
 function backendAvailability() {
+  // A bare "claude" fallback means nothing was actually found - the
+  // resolvers return absolute paths for every real install location
+  // (a GUI editor's PATH cannot be trusted, especially on macOS).
   const claudeResolved = resolveAgentCli();
-  let claude =
+  const claude =
     !!process.env.GRID_AGENT_CLI || claudeResolved.cmd !== "claude";
-  if (!claude && process.platform !== "win32") {
-    claude = spawnSync("which", ["claude"], { windowsHide: true }).status === 0;
-  }
   return {
     claude,
     codex: resolveNpmCli("GRID_AGENT_CODEX", "codex").found,
@@ -377,8 +423,8 @@ function resolveAgentCli() {
       );
       if (bundled) return { cmd: bundled, preArgs: [] };
     }
-    const local = path.join(os.homedir(), ".local", "bin", "claude");
-    if (fs.existsSync(local)) return { cmd: local, preArgs: [] };
+    const found = findUnixCli("claude");
+    if (found) return { cmd: found, preArgs: [] };
     return { cmd: "claude", preArgs: [] };
   }
 
@@ -1684,6 +1730,7 @@ exports.addMessagePort = async function (port, senderId) {
       // The guide's "Check again": re-run the cached environment
       // checks after the user installed something.
       npmFoundCache = undefined;
+      shellWhichCache.clear();
       sendAgentStatus();
     } else if (msg?.type === "probe-local") {
       probeLocal();
