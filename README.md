@@ -31,8 +31,10 @@ server of its own, and adds no cost beyond what you already run.
 - **Builds action blocks.** Describe what you want; the assistant
   proposes blocks as cards in the chat. One click adds each block to
   the Editor's action picker, you place it on the element it names,
-  and Store. Cross-module values (a fader on one module, a screen on
-  another) route through the package automatically.
+  and Store. The blocks are plain firmware Lua: once stored, your
+  Grid does what they say with the Editor closed, on any computer or
+  none. Cross-module values (a fader on one module, a screen on
+  another) use the firmware's own module-to-module messaging.
 - **Holds a conversation.** Follow-ups remember the thread, Stop
   interrupts a running answer, New chat starts clean. You can switch
   agents mid-conversation and the thread carries over.
@@ -89,10 +91,14 @@ but values are not configs, and it knows the difference.
 The package runs in the Editor's package process and spawns your
 agent's CLI headless, prompt on stdin, answer streamed back to the
 panel. Agent-created blocks are registered through the Editor's
-package API and behave like any other block. Value routing uses a
-small relay: source blocks report through the package, and every
-module sees the value as a `ga_<key>` Lua global for display blocks
-to read. Live hardware queries run the same road in reverse: the
+package API and behave like any other block - and they compile to
+plain firmware Lua, so nothing they do requires the Editor or this
+package afterwards. For values that must reach the computer instead
+(feeding another Editor package, say), a small relay exists: source
+blocks report through the package and every module sees the value as
+a `ga_<key>` Lua global; blocks built on it work only while the
+Editor runs, and the assistant says so when it proposes one. Live
+hardware queries run the same road in reverse: the
 package hosts a loopback-only MCP server (bearer-token protected,
 started and stopped with the package), pushes a short Lua script to
 the modules, and the modules answer through the package channel. The

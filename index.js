@@ -67,7 +67,11 @@ function buildSystemPrompt(profilesDir, liveTools) {
     "When the user asks you to BUILD or",
     "CREATE something (a config, a mapping, a screen), propose real",
     "action blocks using the grid-block JSON protocol described in",
-    "GRID_CONTEXT.md under 'Creating action blocks'. Answer briefly",
+    "GRID_CONTEXT.md under 'Creating action blocks'. Proposed blocks",
+    "must keep working with the Editor closed: module-to-module values",
+    "go over gis(), never through this package's relay, which is",
+    "reserved for computer-side integrations and must be flagged as",
+    "Editor-dependent when used. Answer briefly",
     "and concretely; when the reference does not cover something, say",
     "you are unsure.",
   );
