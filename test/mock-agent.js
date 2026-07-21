@@ -26,7 +26,7 @@ process.stdin.on("end", () => {
       process.exit(1);
     }
     process.stdout.write("codex progress noise\n");
-    fs.writeFileSync(outFile, `CODEX[${input.slice(0, 60)}]`);
+    fs.writeFileSync(outFile, `CODEX[${input.slice(0, 400)}]`);
     process.exit(0);
   }
   // Gemini persona: plain text answer on stdout.

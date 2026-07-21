@@ -330,6 +330,8 @@
             <div class="ga-empty-title">Ask Tao Gunka about blocks,
               Lua, or your saved configs. Answers come from your own
               agent, on your machine.</div>
+            <div class="ga-live ga-code" style="display:none;
+              font-size:10.5px;color:var(--ga-acc);"></div>
             <button class="ga-chip ga-setup-open"
               style="border-color:rgba(${ACCENT},0.55);">First time
               here? Set up your assistant step by step</button>
@@ -1173,6 +1175,22 @@
       } else if (msg.type === "agent-status") {
         this.lastStatus = msg;
         if (this.setupOpen) this.renderSetup();
+        const liveEl = this.querySelector(".ga-live");
+        if (liveEl) {
+          if (msg.liveModules?.length) {
+            liveEl.style.display = "";
+            liveEl.textContent =
+              "● live: " +
+              msg.liveModules
+                .map(
+                  (m) =>
+                    `module (${m.dx},${m.dy}) ${m.elements} elements page ${m.page}`,
+                )
+                .join(" · ");
+          } else {
+            liveEl.style.display = "none";
+          }
+        }
         if (this.shareToggle) this.shareToggle.checked = !!msg.shareProfiles;
         if (this.shareLabel) {
           this.shareLabel.textContent = msg.profilesFound

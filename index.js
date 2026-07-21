@@ -483,11 +483,14 @@ function stopActiveChat() {
   }
 }
 
-function runChat(prompt) {
-  if (backendId === "codex") return runChatCodex(prompt);
-  if (backendId === "gemini") return runChatGemini(prompt);
-  if (backendId === "local") return runChatLocal(prompt);
-  return runChatClaude(prompt);
+async function runChat(prompt) {
+  // Every question starts hardware-aware: probe (or reuse a fresh
+  // cache) before the backend spawns, and hand the summary to it.
+  const live = liveSummaryLine(await getLiveModules());
+  if (backendId === "codex") return runChatCodex(prompt, live);
+  if (backendId === "gemini") return runChatGemini(prompt, live);
+  if (backendId === "local") return runChatLocal(prompt, live);
+  return runChatClaude(prompt, live);
 }
 
 // The system message for tool-less local models: the brief, the full
@@ -523,7 +526,7 @@ let activeLocalAbort;
 // OpenAI-compatible (KoboldCpp, LM Studio, ...).
 let localNativeOk;
 
-async function runChatLocal(prompt) {
+async function runChatLocal(prompt, live) {
   stopActiveChat();
   const abort = new AbortController();
   activeLocalAbort = abort;
@@ -534,7 +537,12 @@ async function runChatLocal(prompt) {
   }, CHAT_TIMEOUT_MS);
   toPanel({ type: "chat-start" });
 
-  const messages = [{ role: "system", content: localSystemMessage() }];
+  const messages = [
+    {
+      role: "system",
+      content: localSystemMessage() + (live ? `\n\n${live}` : ""),
+    },
+  ];
   for (const t of transcript) {
     messages.push({ role: "user", content: t.q });
     messages.push({ role: "assistant", content: t.a });
@@ -666,7 +674,7 @@ async function runChatLocal(prompt) {
   }
 }
 
-function runChatClaude(prompt, isRetry) {
+function runChatClaude(prompt, live, isRetry) {
   stopActiveChat();
   const { cmd, preArgs } = resolveAgentCli();
 
@@ -695,7 +703,8 @@ function runChatClaude(prompt, isRetry) {
           ",mcp__grid__grid_module_files,mcp__grid__grid_read_module_file"
         : ""),
     "--append-system-prompt",
-    buildSystemPrompt(withProfiles ? profilesDir : undefined, withMcp),
+    buildSystemPrompt(withProfiles ? profilesDir : undefined, withMcp) +
+      (live ? ` ${live}` : ""),
   ];
   if (withProfiles) {
     args.push("--add-dir", profilesDir);
@@ -824,7 +833,7 @@ function runChatClaude(prompt, isRetry) {
     // degrade to a fresh conversation, not an error.
     if (resumingFrom && !isRetry) {
       lastSessionId = undefined;
-      runChatClaude(prompt, true);
+      runChatClaude(prompt, live, true);
       return;
     }
     toPanel({
@@ -838,7 +847,7 @@ function runChatClaude(prompt, isRetry) {
 // progress logs, not the answer): one chunk on completion. The
 // read-only sandbox blocks writes and commands but allows file reads,
 // so AGENTS.md and the configs stay reachable.
-function runChatCodex(prompt) {
+function runChatCodex(prompt, live) {
   stopActiveChat();
   syncConfigMirror();
   const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_CODEX", "codex");
@@ -867,7 +876,9 @@ function runChatCodex(prompt) {
   }
   activeChild = child;
   toPanel({ type: "chat-start" });
-  child.stdin.write(transcriptPrefixed(prompt));
+  child.stdin.write(
+    (live ? `[${live}]\n` : "") + transcriptPrefixed(prompt),
+  );
   child.stdin.end();
 
   let tail = "";
@@ -917,7 +928,7 @@ function runChatCodex(prompt) {
 // Gemini streams its answer on stdout in plan (read-only) mode; the
 // question rides stdin and -p carries only a fixed instruction, so no
 // user text ever passes through cmd.exe argv.
-function runChatGemini(prompt) {
+function runChatGemini(prompt, live) {
   stopActiveChat();
   syncConfigMirror(); // in-workspace mirror, same as codex
   const { cmd, preArgs } = resolveNpmCli("GRID_AGENT_GEMINI", "gemini");
@@ -939,7 +950,9 @@ function runChatGemini(prompt) {
   }
   activeChild = child;
   toPanel({ type: "chat-start" });
-  child.stdin.write(transcriptPrefixed(prompt));
+  child.stdin.write(
+    (live ? `[${live}]\n` : "") + transcriptPrefixed(prompt),
+  );
   child.stdin.end();
 
   let fullText = "";
@@ -1438,6 +1451,47 @@ const ELEMENT_TYPE_NAMES = {
   s: "system/screen",
 };
 
+// Prefetched live context: every question starts with a fresh (or
+// recently cached) broadcast probe, so the agent knows what hardware
+// is connected without being asked to check. The probe is the same
+// modInfoScript round trip grid_status uses.
+let liveCache; // { at, modules: [{dx,dy,page,elements}] }
+const LIVE_CACHE_MS = 15000;
+
+async function getLiveModules() {
+  if (!controller || packageShutDown) return undefined;
+  if (liveCache && Date.now() - liveCache.at < LIVE_CACHE_MS) {
+    return liveCache.modules;
+  }
+  const replies = await ctxRequest({ script: modInfoScript, windowMs: 700 });
+  const modules = (replies ?? [])
+    .filter((r) => String(r[0]) === "mod")
+    .map((r) => ({
+      dx: Number(r[1]),
+      dy: Number(r[2]),
+      page: Number(r[3]),
+      elements: Number(r[4]),
+    }));
+  liveCache = { at: Date.now(), modules };
+  sendAgentStatus();
+  return modules;
+}
+
+function liveSummaryLine(modules) {
+  if (modules === undefined) return "";
+  if (modules.length === 0) {
+    return (
+      "Live hardware probe just now: no module answered - modules may " +
+      "be disconnected; do not claim knowledge of connected hardware."
+    );
+  }
+  const parts = modules.map(
+    (m) =>
+      `(${m.dx},${m.dy}) ${m.elements} elements, active page ${m.page}`,
+  );
+  return `Live hardware probe just now - connected modules: ${parts.join("; ")}.`;
+}
+
 async function toolGridStatus() {
   const replies = await ctxRequest({ script: modInfoScript, windowMs: 700 });
   if (replies === undefined) {
@@ -1931,6 +1985,7 @@ function sendAgentStatus() {
     localModel,
     platform: process.platform,
     npmFound: npmFound(),
+    liveModules: liveCache?.modules,
   });
 }
 
@@ -1979,6 +2034,11 @@ exports.loadPackage = async function (gridController, persistedData) {
   profilesDir = findProfilesDir();
   writeContextFiles();
   startMcpServer();
+  // First live probe once the editor and modules have had a moment to
+  // settle; the result lands in agent-status for the panel greeting.
+  setTimeout(() => {
+    if (!packageShutDown) getLiveModules();
+  }, 2500);
 };
 
 exports.unloadPackage = async function () {
@@ -2081,6 +2141,7 @@ exports.addMessagePort = async function (port, senderId) {
       // checks after the user installed something.
       npmFoundCache = undefined;
       shellWhichCache.clear();
+      liveCache = undefined;
       sendAgentStatus();
     } else if (msg?.type === "probe-local") {
       probeLocal();

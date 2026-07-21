@@ -748,6 +748,61 @@ async function waitFor(port, type, timeoutMs) {
         mcpArgs.some((a) => /grid_element_values reads the current value/.test(a)),
     );
 
+    // --- Live-context prefetch ----------------------------------------
+    // A chat first broadcasts the probe; a module reply lands in the
+    // system prompt. The cache then serves the next question without a
+    // second probe.
+    async function argsWithProbe(reply) {
+      port.received.length = 0;
+      editorMsgs.length = 0;
+      process.env.MOCK_MODE = "args";
+      port.emit({ type: "chat", prompt: "argdump" });
+      if (reply) {
+        let probe;
+        for (let i = 0; i < 20 && !probe; i++) {
+          await sleep(50);
+          probe = editorMsgs.find(
+            (m) => m.type === "execute-lua-script" && /"mod"/.test(m.script),
+          );
+        }
+        const id = /"ctx","([a-z0-9]+)"/.exec(probe?.script ?? "")?.[1];
+        if (id) await pkg.sendMessage(["ctx", id, "mod", 2, 0, 1, 16]);
+      }
+      await waitFor(port, "chat-done", 8000);
+      process.env.MOCK_MODE = "ok";
+      const text = port.received
+        .filter((m) => m.type === "chat-chunk")
+        .map((m) => m.text)
+        .join("");
+      return JSON.parse(text.replace(/^ARGS:/, ""));
+    }
+    port.emit({ type: "setup-recheck" }); // clears the live cache
+    await sleep(100);
+    const liveArgs = await argsWithProbe(true);
+    check(
+      "live probe summary lands in the system prompt",
+      liveArgs.some((a) =>
+        /connected modules: \(2,0\) 16 elements, active page 1/.test(a),
+      ),
+    );
+    editorMsgs.length = 0;
+    const cachedArgs = await argsWithProbe(false);
+    check(
+      "fresh cache serves the next chat without reprobing",
+      cachedArgs.some((a) => /connected modules: \(2,0\)/.test(a)) &&
+        !editorMsgs.some(
+          (m) => m.type === "execute-lua-script" && /"mod"/.test(m.script),
+        ),
+    );
+    port.received.length = 0;
+    port.emit({ type: "request-status" });
+    await sleep(150);
+    const liveSt = port.received.find((m) => m.type === "agent-status");
+    check(
+      "agent-status carries the probed modules",
+      liveSt?.liveModules?.some((m) => m.dx === 2 && m.elements === 16),
+    );
+
     // --- Setup guide plumbing -----------------------------------------
     port.received.length = 0;
     port.emit({ type: "request-status" });
