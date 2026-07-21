@@ -1,4 +1,4 @@
-# Tao Gunka
+# Tao Gunka - An AI Assistant Package for Grid Editor
 
 An AI assistant that lives inside the Grid Editor and actually knows
 Grid. Ask why your button fires twice and it answers with the
