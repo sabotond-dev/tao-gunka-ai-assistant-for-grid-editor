@@ -333,16 +333,17 @@ function writeContextFiles() {
 // it only under %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming.
 // Non-store installs use plain %APPDATA%. Scan both, newest version
 // wins, PATH `claude` as the final fallback.
-function newestCliIn(base) {
+function newestCliIn(base, exeName) {
+  const exe = exeName ?? "claude.exe";
   try {
     const versions = fs
       .readdirSync(base)
-      .filter((d) => fs.existsSync(path.join(base, d, "claude.exe")))
+      .filter((d) => fs.existsSync(path.join(base, d, exe)))
       .sort((a, b) =>
         b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
       );
     if (versions.length > 0) {
-      return path.join(base, versions[0], "claude.exe");
+      return path.join(base, versions[0], exe);
     }
   } catch (e) {
     /* not present */
@@ -360,8 +361,22 @@ function resolveAgentCli() {
   }
 
   if (process.platform !== "win32") {
-    // macOS / Linux: standalone installs land in ~/.local/bin, npm
-    // installs on PATH.
+    // macOS: the Claude desktop app bundles versioned CLI builds under
+    // Application Support, same layout as Windows. Standalone installs
+    // land in ~/.local/bin, npm installs on PATH.
+    if (process.platform === "darwin") {
+      const bundled = newestCliIn(
+        path.join(
+          os.homedir(),
+          "Library",
+          "Application Support",
+          "Claude",
+          "claude-code",
+        ),
+        "claude",
+      );
+      if (bundled) return { cmd: bundled, preArgs: [] };
+    }
     const local = path.join(os.homedir(), ".local", "bin", "claude");
     if (fs.existsSync(local)) return { cmd: local, preArgs: [] };
     return { cmd: "claude", preArgs: [] };
@@ -1375,18 +1390,51 @@ function runBackendLogin(backend) {
   }
   if (backend === "claude") {
     // Open a terminal already running the CLI; the user types /login.
-    // Windows-only convenience; elsewhere the panel guidance covers
-    // running the CLI manually.
-    if (process.platform !== "win32") {
-      toPanel({ type: "login-result", backend, ok: false });
-      return;
-    }
     const { cmd, preArgs } = resolveAgentCli();
     try {
-      spawn("cmd.exe", ["/c", "start", "Claude sign-in", cmd, ...preArgs], {
-        windowsHide: true,
-        detached: true,
-      }).unref();
+      if (process.platform === "win32") {
+        spawn("cmd.exe", ["/c", "start", "Claude sign-in", cmd, ...preArgs], {
+          windowsHide: true,
+          detached: true,
+        }).unref();
+      } else if (process.platform === "darwin") {
+        // Terminal.app ships with every Mac; osascript hands it the
+        // CLI as a shell line (single-quoted, so spaces in the
+        // Application Support path survive).
+        const line = [cmd, ...preArgs]
+          .map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`)
+          .join(" ");
+        spawn(
+          "osascript",
+          [
+            "-e",
+            'tell application "Terminal" to activate',
+            "-e",
+            `tell application "Terminal" to do script ${JSON.stringify(line)}`,
+          ],
+          { detached: true },
+        ).unref();
+      } else {
+        // Linux: first terminal emulator that exists gets the CLI.
+        const terminals = [
+          ["x-terminal-emulator", ["-e"]],
+          ["gnome-terminal", ["--"]],
+          ["konsole", ["-e"]],
+          ["xfce4-terminal", ["-x"]],
+          ["xterm", ["-e"]],
+        ];
+        const found = terminals.find(
+          ([t]) =>
+            spawnSync("which", [t], { windowsHide: true }).status === 0,
+        );
+        if (!found) {
+          toPanel({ type: "login-result", backend, ok: false });
+          return;
+        }
+        spawn(found[0], [...found[1], cmd, ...preArgs], {
+          detached: true,
+        }).unref();
+      }
       toPanel({ type: "login-result", backend, ok: null });
     } catch (e) {
       toPanel({ type: "login-result", backend, ok: false });
