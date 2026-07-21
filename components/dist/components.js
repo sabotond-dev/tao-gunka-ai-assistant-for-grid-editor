@@ -661,6 +661,7 @@
                 label: "Open Claude sign-in",
                 msg: { type: "backend-login", backend: "claude" },
               },
+              verify: true,
             },
             { test: true },
           ],
@@ -933,6 +934,18 @@
           });
           actions.appendChild(btn);
         }
+        if (step.verify) {
+          const btn = document.createElement("button");
+          btn.className = "ga-chip";
+          btn.textContent = "Check sign-in";
+          btn.addEventListener("click", () => {
+            // The verdict lands in the chat, where there is room for
+            // the diagnosis; close the guide so it is visible.
+            this.closeSetup();
+            this.port?.postMessage({ type: "verify-login" });
+          });
+          actions.appendChild(btn);
+        }
         if (step.probe) {
           const btn = document.createElement("button");
           btn.className = "ga-chip";
@@ -1020,6 +1033,25 @@
         const el = this.addMsg("ai", msg.message);
         el.classList.add("ga-error");
         this.finish();
+      } else if (msg.type === "login-verify") {
+        if (this._verifyBtn) {
+          this._verifyBtn.disabled = false;
+          this._verifyBtn.textContent = "Check sign-in";
+          this._verifyBtn = null;
+        }
+        const el = this.addMsg(
+          "ai",
+          msg.ok
+            ? `Sign-in verified. ${msg.detail ?? ""}`
+            : `Still not signed in for this panel.\nCLI: ${msg.cliPath}\n` +
+              `It said: ${msg.detail ?? "(nothing)"}\n` +
+              "If you signed in with a different Claude install, run " +
+              "/login once in the exact CLI shown above (the sign-in " +
+              "button opens it). On a Mac, if a Keychain permission " +
+              "window appears anywhere, choose Always Allow.",
+        );
+        if (!msg.ok) el.classList.add("ga-error");
+        this.scrollDown(true);
       } else if (msg.type === "local-probe") {
         this.lastProbe = msg;
         if (this.setupOpen) this.renderSetup();
@@ -1073,6 +1105,13 @@
         };
         const el = this.addMsg("ai", guides[backend]);
         el.classList.add("ga-error");
+        if (backend === "claude" && msg.cliPath) {
+          const p = document.createElement("div");
+          p.className = "ga-note ga-code";
+          p.style.marginTop = "4px";
+          p.textContent = `Using: ${msg.cliPath}`;
+          el.appendChild(p);
+        }
         if (backend !== "gemini") {
           const btn = document.createElement("button");
           btn.className = "ga-chip";
@@ -1086,6 +1125,20 @@
           });
           el.appendChild(document.createElement("br"));
           el.appendChild(btn);
+          if (backend === "claude") {
+            const vb = document.createElement("button");
+            vb.className = "ga-chip";
+            vb.style.marginTop = "6px";
+            vb.style.marginLeft = "6px";
+            vb.textContent = "Check sign-in";
+            vb.addEventListener("click", () => {
+              vb.disabled = true;
+              vb.textContent = "Checking (up to a minute)…";
+              this._verifyBtn = vb;
+              this.port?.postMessage({ type: "verify-login" });
+            });
+            el.appendChild(vb);
+          }
         }
         this.finish();
       } else if (msg.type === "chat-history") {

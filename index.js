@@ -726,7 +726,11 @@ function runChatClaude(prompt, isRetry) {
             // A signed-out CLI reports it as normal assistant text
             // (hardware-verified), not on stderr.
             if (/not logged in.*\/login/i.test(part.text)) {
-              toPanel({ type: "chat-login-needed", backend: "claude" });
+              toPanel({
+                type: "chat-login-needed",
+                backend: "claude",
+                cliPath: cmd,
+              });
               sawText = true;
               continue;
             }
@@ -765,7 +769,7 @@ function runChatClaude(prompt, isRetry) {
     if (sawText) return; // normal path already reported chat-done
     const tail = stderrTail.trim();
     if (/log ?in|logged in/i.test(tail)) {
-      toPanel({ type: "chat-login-needed", backend: "claude" });
+      toPanel({ type: "chat-login-needed", backend: "claude", cliPath: cmd });
       return;
     }
     // A dead --resume target (expired or cleaned-up session) should
@@ -1351,6 +1355,94 @@ function stopMcpServer() {
 // Harness hook: lets the tests reach the loopback server.
 exports._mcpInfo = () => ({ port: mcpPort, token: mcpToken });
 
+// --- Sign-in verification --------------------------------------------
+// Runs the exact same headless spawn a chat uses and reports the raw
+// outcome. Turns "it still says not logged in" into a diagnosable
+// message: which binary ran, what it printed. macOS especially needs
+// this - credentials live in the Keychain, granted per binary, so a
+// Terminal login and the panel's spawn can disagree.
+
+let verifyChild;
+
+function runLoginVerify() {
+  if (verifyChild) return;
+  const { cmd, preArgs } = resolveAgentCli();
+  const env = { ...process.env };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  let child;
+  try {
+    child = spawn(
+      cmd,
+      [...preArgs, "-p", "--output-format", "stream-json", "--verbose"],
+      { env, windowsHide: true, cwd: __dirname },
+    );
+  } catch (e) {
+    toPanel({
+      type: "login-verify",
+      ok: false,
+      cliPath: cmd,
+      detail: `Could not start the CLI: ${e.message}`,
+    });
+    return;
+  }
+  verifyChild = child;
+  child.stdin.write("Reply with the single word OK");
+  child.stdin.end();
+  let out = "";
+  let errTail = "";
+  child.stdout.on("data", (d) => {
+    out += d.toString();
+  });
+  child.stderr.on("data", (d) => {
+    errTail = (errTail + d.toString()).slice(-300);
+  });
+  const timer = setTimeout(() => {
+    try {
+      child.kill();
+    } catch (e) {}
+  }, 90000);
+  child.on("error", (e) => {
+    clearTimeout(timer);
+    verifyChild = undefined;
+    toPanel({
+      type: "login-verify",
+      ok: false,
+      cliPath: cmd,
+      detail: `Could not start the CLI: ${e.message}`,
+    });
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    verifyChild = undefined;
+    let text = "";
+    for (const line of out.split("\n")) {
+      try {
+        const ev = JSON.parse(line);
+        if (ev.type === "assistant") {
+          for (const part of ev.message?.content ?? []) {
+            if (part.type === "text") text += part.text;
+          }
+        }
+      } catch (e) {
+        /* not JSON */
+      }
+    }
+    const notLoggedIn = /not logged in/i.test(text + errTail);
+    const ok = !notLoggedIn && code === 0 && text.trim().length > 0;
+    toPanel({
+      type: "login-verify",
+      ok,
+      cliPath: cmd,
+      detail: ok
+        ? `The CLI answered: ${text.trim().slice(0, 120)}`
+        : (text.trim() || errTail.trim() || `exit code ${code}, no output`)
+            .slice(0, 220),
+    });
+  });
+}
+
 // --- Sign-in from the panel ------------------------------------------
 // codex login does all its interaction in the browser, so a plain
 // spawn is a one-click sign-in. Claude's /login is an interactive TUI:
@@ -1541,6 +1633,8 @@ exports.addMessagePort = async function (port, senderId) {
       persistSettings();
     } else if (msg?.type === "backend-login") {
       if (BACKENDS[msg.backend]) runBackendLogin(msg.backend);
+    } else if (msg?.type === "verify-login") {
+      runLoginVerify();
     } else if (msg?.type === "create-block") {
       const block = createAgentBlock(msg.block);
       toPanel({

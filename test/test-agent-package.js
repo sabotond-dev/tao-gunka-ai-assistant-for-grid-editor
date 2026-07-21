@@ -755,6 +755,28 @@ async function waitFor(port, type, timeoutMs) {
     );
     tagsServer.close();
 
+    // verify-login: the probe runs the real headless spawn shape and
+    // reports the raw outcome either way.
+    process.env.MOCK_MODE = "ok";
+    port.received.length = 0;
+    port.emit({ type: "verify-login" });
+    await waitFor(port, "login-verify", 8000);
+    const verOk = port.received.find((m) => m.type === "login-verify");
+    check(
+      "verify-login confirms a signed-in CLI",
+      verOk?.ok === true && /Echo/.test(verOk.detail) && !!verOk.cliPath,
+    );
+    process.env.MOCK_MODE = "nologin-stdout";
+    port.received.length = 0;
+    port.emit({ type: "verify-login" });
+    await waitFor(port, "login-verify", 8000);
+    const verBad = port.received.find((m) => m.type === "login-verify");
+    check(
+      "verify-login surfaces a signed-out CLI with its words",
+      verBad?.ok === false && /not logged in/i.test(verBad.detail),
+    );
+    process.env.MOCK_MODE = "ok";
+
     // ...and a dead server reports not-reachable instead of hanging.
     port.emit({
       type: "set-local-config",
