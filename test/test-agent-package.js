@@ -592,10 +592,44 @@ async function waitFor(port, type, timeoutMs) {
       await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })
     ).json();
     check(
-      "mcp lists the two live tools",
-      list.result?.tools?.length === 2 &&
+      "mcp lists the four live tools",
+      list.result?.tools?.length === 4 &&
         list.result.tools.some((t) => t.name === "grid_status") &&
-        list.result.tools.some((t) => t.name === "grid_element_values"),
+        list.result.tools.some((t) => t.name === "grid_element_values") &&
+        list.result.tools.some((t) => t.name === "grid_module_files") &&
+        list.result.tools.some((t) => t.name === "grid_read_module_file"),
+    );
+
+    // Module filesystem probe: targeted gfls script, reply unpacked.
+    editorMsgs.length = 0;
+    const fsPromise = mcpPost({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: {
+        name: "grid_module_files",
+        arguments: { dx: 0, dy: 0, path: '/cfg";bad' },
+      },
+    });
+    let fsMsg;
+    for (let i = 0; i < 20 && !fsMsg; i++) {
+      await sleep(50);
+      fsMsg = editorMsgs.find(
+        (m) => m.type === "execute-lua-script" && /gfls/.test(m.script),
+      );
+    }
+    check(
+      "module-files targets and sanitizes the path",
+      !!fsMsg &&
+        fsMsg.targetDx === 0 &&
+        /gfls\("\/cfgbad"\)/.test(fsMsg.script),
+    );
+    const fsId = /"ctx","([a-z0-9]+)"/.exec(fsMsg?.script ?? "")?.[1];
+    await pkg.sendMessage(["ctx", fsId, "fs", 0, 0, "a.cfg;b.cfg;"]);
+    const fsOut = await (await fsPromise).json();
+    check(
+      "module-files reply lists entries",
+      /a\.cfg;b\.cfg;/.test(fsOut.result?.content?.[0]?.text ?? ""),
     );
 
     // grid_status: broadcast script goes out, two fake modules answer.
@@ -844,6 +878,37 @@ async function waitFor(port, type, timeoutMs) {
       "name collision suffixes the filename",
       pAck2?.ok === true && pAck2.filename === "Test Pad 2.json",
     );
+    // Try-now: handlers ride execute-lua-script with the module guard.
+    port.received.length = 0;
+    editorMsgs.length = 0;
+    port.emit({
+      type: "tryout-profile",
+      requestId: 95,
+      profile: {
+        name: "Tryout",
+        module: "BU16",
+        elements: {
+          0: { setup: "self.n=36", button: "self:gms(9,144,self.n,self:bva())" },
+        },
+      },
+    });
+    await waitFor(port, "profile-tryout", 5000);
+    const tAck = port.received.find((m) => m.type === "profile-tryout");
+    const tScripts = editorMsgs.filter((m) => m.type === "execute-lua-script");
+    check(
+      "tryout pushes guarded handler overrides",
+      tAck?.ok === true &&
+        tAck.applied === 2 &&
+        tScripts.length === 2 &&
+        tScripts.every((s) => /if gec\(\)==16 and element\[0\]\.bva/.test(s.script)) &&
+        tScripts.some((s) =>
+          /element\[0\] e\.bc=function\(self\) self:gms\(9,144,self\.n,self:bva\(\)\) end/.test(
+            s.script,
+          ),
+        ) &&
+        tScripts.some((s) => /e\.ini=function\(self\) self\.n=36 end e:ini\(\)/.test(s.script)),
+    );
+
     // Garbage in: a clean refusal, not a file.
     port.received.length = 0;
     port.emit({

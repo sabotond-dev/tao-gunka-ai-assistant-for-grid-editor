@@ -391,6 +391,22 @@ the profile list and then Store. Rules:
 - Prefer element defaults (`self:gms(-1,-1,-1,...)`) where the
   auto-assigned channel/CC is fine; explicit numbers where the user
   named them.
+- The card also offers "Try now" (experimental): the package pushes
+  the handlers into the module's RAM immediately - active until
+  power-off, stored config untouched. Permanence still requires
+  Save + load + Store. Mention the tryout option when proposing a
+  profile, with its until-power-off caveat.
+
+## Reading what a module actually stores (open question)
+
+When you have the tools `grid_module_files` and
+`grid_read_module_file`, you can probe a connected module's internal
+filesystem (firmware gfls/gfcat). Whether stored event configs are
+reachable there is UNVERIFIED - if the user asks what a module
+really runs right now, you may explore (start at "/"), but report
+findings verbatim and never present a guess as the stored config.
+The saved snapshot files with their age caveat remain the reliable
+source.
 
 ## Known limits worth stating honestly
 

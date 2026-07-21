@@ -40,7 +40,9 @@ server of its own, and adds no cost beyond what you already run.
   sixteen blocks. Saving puts a real profile file in your local
   profile list - load it onto the module like any other profile and
   Store. Loading replaces the module's current config, and the card
-  says so.
+  says so. A Try now button (experimental) pushes the behavior into
+  the module's memory immediately - test-drive it, then Save to keep
+  it; it lasts until the module powers off.
 - **Holds a conversation.** Follow-ups remember the thread, Stop
   interrupts a running answer, New chat starts clean. You can switch
   agents mid-conversation and the thread carries over.

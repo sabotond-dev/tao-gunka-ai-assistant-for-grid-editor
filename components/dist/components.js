@@ -554,6 +554,8 @@
           `Configures ${els} element${els === 1 ? "" : "s"}. Loading a ` +
           `profile replaces the module's whole current config.`;
         card.appendChild(info);
+        const row = document.createElement("div");
+        row.className = "ga-step-row";
         const btn = document.createElement("button");
         btn.className = "ga-card-btn";
         btn.textContent = "Save to my profiles";
@@ -564,7 +566,26 @@
           this.pendingCards.set(requestId, card);
           this.port?.postMessage({ type: "create-profile", requestId, profile });
         });
-        card.appendChild(btn);
+        row.appendChild(btn);
+        const tryBtn = document.createElement("button");
+        tryBtn.className = "ga-chip";
+        tryBtn.textContent = "Try now (until power off)";
+        tryBtn.title =
+          "Experimental: pushes the behavior into the module's memory " +
+          "without storing it";
+        tryBtn.addEventListener("click", () => {
+          tryBtn.disabled = true;
+          tryBtn.textContent = "Trying…";
+          const requestId = ++this.cardSeq;
+          this.pendingCards.set(requestId, card);
+          this.port?.postMessage({
+            type: "tryout-profile",
+            requestId,
+            profile,
+          });
+        });
+        row.appendChild(tryBtn);
+        card.appendChild(row);
         anchor.after(card);
         anchor = card;
       }
@@ -1227,6 +1248,32 @@
             err.textContent = `Could not save: ${msg.error ?? "unknown"}`;
             card.appendChild(err);
           }
+        }
+      } else if (msg.type === "profile-tryout") {
+        const card = this.pendingCards.get(msg.requestId);
+        this.pendingCards.delete(msg.requestId);
+        if (card) {
+          const tryBtn = card.querySelector("button.ga-chip");
+          const hint = document.createElement("div");
+          hint.className = "ga-card-where";
+          hint.style.marginTop = "6px";
+          if (msg.ok) {
+            if (tryBtn) tryBtn.textContent = "Sent to the module";
+            hint.textContent =
+              `Pushed ${msg.applied} event handler${msg.applied === 1 ? "" : "s"} ` +
+              `into the ${msg.module}'s memory (experimental). Play with ` +
+              "it now - this lasts until the module powers off and does " +
+              "not touch the stored config. If nothing changed, this " +
+              "firmware may not allow it; Save and load instead. Make it " +
+              "permanent with Save, then load and Store.";
+          } else {
+            if (tryBtn) {
+              tryBtn.disabled = false;
+              tryBtn.textContent = "Try now (until power off)";
+            }
+            hint.textContent = `Could not try: ${msg.error ?? "unknown"}`;
+          }
+          card.appendChild(hint);
         }
       } else if (msg.type === "block-created") {
         const card = this.pendingCards.get(msg.requestId);

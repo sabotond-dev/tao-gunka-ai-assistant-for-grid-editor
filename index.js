@@ -689,7 +689,8 @@ function runChatClaude(prompt, isRetry) {
     "--allowedTools",
     "Read,Glob,Grep" +
       (withMcp
-        ? ",mcp__grid__grid_status,mcp__grid__grid_element_values"
+        ? ",mcp__grid__grid_status,mcp__grid__grid_element_values" +
+          ",mcp__grid__grid_module_files,mcp__grid__grid_read_module_file"
         : ""),
     "--append-system-prompt",
     buildSystemPrompt(withProfiles ? profilesDir : undefined, withMcp),
@@ -1232,6 +1233,65 @@ function buildProfileFile(p) {
   };
 }
 
+// --- Instant tryout ---------------------------------------------------
+// The firmware compiles each event config into an element METHOD
+// (ini/bc/pc/ec/epc/tim/ld/map/mrx), and Lua lets immediate script
+// reassign them. So a profile can be pushed straight into RAM: active
+// instantly, gone at power-off, stored config untouched. Broadcast
+// with a per-module guard (element count + element type signature) so
+// only the matching module type applies it. EXPERIMENTAL until
+// hardware-verified.
+
+const EVENT_HANDLER_SHORTS = {
+  0: "ini",
+  1: "pc",
+  2: "ec",
+  3: "bc",
+  4: "map",
+  5: "mrx",
+  6: "tim",
+  7: "epc",
+  8: "ld",
+};
+
+// Guard: element count plus a type probe that tells lookalikes apart
+// (BU16/EN16/PO16 all count 16; their element 0 differs).
+const MODULE_GUARDS = {
+  BU16: "gec()==16 and element[0].bva and not element[0].eva and not element[0].pva",
+  EN16: "gec()==16 and element[0].eva",
+  PO16: "gec()==16 and element[0].pva",
+  PBF4: "gec()==12 and element[0].pva and element[8].bva",
+  EF44: "gec()==8 and element[0].eva and element[4].pva",
+  TEK2: "gec()==10 and element[8].epva",
+  VSN1L: "gec()==14 and element[8].epva",
+  VSN1R: "gec()==14 and element[8].epva",
+};
+
+function tryoutProfile(raw) {
+  const p = sanitizeProfile(raw);
+  if (!p) return { ok: false, error: "invalid profile" };
+  if (!controller) return { ok: false, error: "editor not connected" };
+  const guard = MODULE_GUARDS[p.module];
+  let applied = 0;
+  for (const [idxStr, events] of Object.entries(p.elements)) {
+    for (const [evNum, lua] of Object.entries(events)) {
+      const handler = EVENT_HANDLER_SHORTS[evNum];
+      if (!handler) continue;
+      // Init handlers run once right after being swapped in, the way
+      // a fresh profile's setup would.
+      const runNow = Number(evNum) === 0 ? ` e:${handler}()` : "";
+      controller.sendMessageToEditor({
+        type: "execute-lua-script",
+        script:
+          `if ${guard} then local e=element[${idxStr}] ` +
+          `e.${handler}=function(self) ${lua} end${runNow} end`,
+      });
+      applied++;
+    }
+  }
+  return { ok: applied > 0, module: p.module, applied };
+}
+
 function createProfile(raw) {
   const p = sanitizeProfile(raw);
   if (!p) return { ok: false, error: "invalid profile" };
@@ -1436,6 +1496,51 @@ async function toolGridElementValues(dx, dy) {
   );
 }
 
+// Module filesystem probes: the firmware exposes gfls (readdir) and
+// gfcat (readfile), unused by the editor itself. If stored configs
+// turn out to live on that filesystem, these two tools are the road
+// to reading what a module ACTUALLY runs - flagged experimental
+// until real hardware answers.
+function sanitizeModulePath(p) {
+  return String(p ?? "/").replace(/[^a-zA-Z0-9_./-]/g, "").slice(0, 120) || "/";
+}
+
+const moduleFilesScript = (id, p) =>
+  `local t=gfls("${p}") local s="" if type(t)=="table" then ` +
+  `for i,v in ipairs(t) do s=s..tostring(v)..";" end ` +
+  `else s=tostring(t) end ` +
+  `gps("package-grid-agent","ctx","${id}","fs",gmx(),gmy(),s)`;
+const moduleReadFileScript = (id, p) =>
+  `local c=gfcat("${p}") ` +
+  `gps("package-grid-agent","ctx","${id}","fc",gmx(),gmy(),` +
+  `string.sub(tostring(c),1,900))`;
+
+async function toolModuleFs(dx, dy, p, script, tag, label) {
+  const replies = await ctxRequest({
+    script: (id) => script(id, p),
+    targetDx: dx,
+    targetDy: dy,
+    windowMs: 900,
+    single: true,
+  });
+  if (replies === undefined) {
+    return "The editor connection is not available, so live hardware cannot be queried.";
+  }
+  const hit = replies.find((r) => String(r[0]) === tag);
+  if (!hit) {
+    return (
+      `No reply from the module at dx=${dx}, dy=${dy} within 900 ms. ` +
+      "Either it is not connected, or this firmware does not expose " +
+      `${label} - treat the module filesystem as unavailable and say so.`
+    );
+  }
+  const body = String(hit[3] ?? "");
+  return (
+    `${label}("${p}") on the module at dx=${hit[1]}, dy=${hit[2]} ` +
+    `returned:\n${body || "(empty)"}`
+  );
+}
+
 const MCP_TOOLS = [
   {
     name: "grid_status",
@@ -1458,6 +1563,41 @@ const MCP_TOOLS = [
         dy: { type: "integer", description: "module chain position y" },
       },
       required: ["dx", "dy"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "grid_module_files",
+    description:
+      "EXPERIMENTAL: list a directory on one module's internal " +
+      "filesystem via the firmware's gfls(). Whether stored configs " +
+      "are reachable this way is an open question - report what " +
+      "comes back honestly, including nothing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dx: { type: "integer" },
+        dy: { type: "integer" },
+        path: { type: "string", description: "directory path, default /" },
+      },
+      required: ["dx", "dy"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "grid_read_module_file",
+    description:
+      "EXPERIMENTAL: read the first 900 characters of a file on one " +
+      "module's internal filesystem via the firmware's gfcat(). Use " +
+      "paths discovered with grid_module_files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dx: { type: "integer" },
+        dy: { type: "integer" },
+        path: { type: "string" },
+      },
+      required: ["dx", "dy", "path"],
       additionalProperties: false,
     },
   },
@@ -1486,6 +1626,24 @@ async function mcpDispatch(rpc) {
         text = await toolGridElementValues(
           Number(args.dx) || 0,
           Number(args.dy) || 0,
+        );
+      } else if (name === "grid_module_files") {
+        text = await toolModuleFs(
+          Number(args.dx) || 0,
+          Number(args.dy) || 0,
+          sanitizeModulePath(args.path),
+          moduleFilesScript,
+          "fs",
+          "readdir",
+        );
+      } else if (name === "grid_read_module_file") {
+        text = await toolModuleFs(
+          Number(args.dx) || 0,
+          Number(args.dy) || 0,
+          sanitizeModulePath(args.path),
+          moduleReadFileScript,
+          "fc",
+          "readfile",
         );
       } else {
         return {
@@ -1861,6 +2019,13 @@ exports.addMessagePort = async function (port, senderId) {
       const result = createProfile(msg.profile);
       toPanel({
         type: "profile-created",
+        requestId: msg.requestId,
+        ...result,
+      });
+    } else if (msg?.type === "tryout-profile") {
+      const result = tryoutProfile(msg.profile);
+      toPanel({
+        type: "profile-tryout",
         requestId: msg.requestId,
         ...result,
       });
