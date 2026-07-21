@@ -573,7 +573,9 @@ async function runChatLocal(prompt) {
         messages,
         stream: true,
         think: false,
-        options: { num_ctx: 8192 },
+        // The reference grew with the v3 knowledge sections; 8k was
+        // getting tight with the transcript on top.
+        options: { num_ctx: 16384 },
       },
     });
   }

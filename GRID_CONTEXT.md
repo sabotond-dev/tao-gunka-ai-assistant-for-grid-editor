@@ -72,6 +72,63 @@ auto-channel / auto-CC the editor assigns). Examples:
 
 SysEx: `gmss(0xF0, ..., 0xF7)`. There is no other MIDI send API.
 
+Where the `-1` defaults come from (firmware auto functions):
+channel = module Y position + page number (0..15); command = 144
+(Note On) for button events, 176 (CC) for everything else;
+param1 = module X position + element index. So "which CC does my
+fader send by default" is answerable from the module's position and
+the element index.
+
+## More MIDI: 14-bit, NRPN, receiving
+
+Canonical shapes from the editor's own blocks (val = your value):
+
+- **14-bit CC pair** (MSB on CC n, LSB on CC n+32):
+  `gms(0,176,0,val//128) gms(0,176,32,val%128)` - pair with an
+  endless knob's native 0..16383 range (see Element settings).
+- **NRPN**: `gms(0,176,99,num//128) gms(0,176,98,num%128) gms(0,176,6,val)`
+- **SysEx**: `gmss(0xF0, 0x41, 0x10, val, 0xF7)`
+- **Receiving MIDI**: `self:gmrr(event, ch, cmd, p1, {set_value, set_led})`
+  registers a MIDI RX callback on the element (-1 = auto values;
+  the booleans auto-apply the incoming value / LED). `grxm(type, mode)`
+  sets RX routing - type 0 MIDIVOICE / 1 SYSEX / 2 RTM / 3 EVENTVIEW,
+  mode bitmask 0x01 forward_from_usb, 0x02 handle_external,
+  0x04 handle_internal. Exact callback firing semantics are not
+  hardware-verified yet - say so if the user builds on them.
+
+## Mouse, scroll and gamepad output
+
+- `gmbs(button, state)` mouse button (editor default: `gmbs(1,0)`)
+- `gmms(axis, delta)` mouse move; axis 3 is the SCROLL WHEEL - the
+  editor's own Scroll block is `gmms(3,(self:est()-64)*3)`
+- `ggbs(button, state)` gamepad button, `ggms(axis, value)` gamepad
+  axis
+- Canonical keyboard tap with edge latch (the editor's Keyboard
+  block): `if self:bst()>0 then if self.skb~=1 then self.skb=1
+  gks(25) end else self.skb=0 end` (append key triplets to gks)
+
+## Element settings (put in the Setup event)
+
+Editor-canonical setting calls, safe defaults shown:
+
+- Button: `self:bmo(0) self:bmi(0) self:bma(127)`. **`self:bmo(-2)`
+  switches a Hall-effect button to PRESSURE-SENSITIVE mode** - the
+  button value then follows press depth (the official
+  pressure-sensitive defaults pair it with auto MIDI and a red LED
+  `self:glc(-1,{{255,10,39,1}})`).
+- Potmeter: `self:pmo(7) self:pmi(0) self:pma(127)` (pmo = bit
+  depth).
+- Encoder: `self:emo(0) self:ev0(50) self:emi(0) self:ema(127)
+  self:ese(100)` (mode, velocity, min, max, sensitivity).
+- Endless: `self:epmo(0) self:epv0(50) self:epmi(0)
+  self:epma(16383) self:epse(50)` - **native 14-bit range**; drop
+  epma to 127 for plain CC use.
+- Timer tick source: `gts(self:ind(),0)`.
+
+The exact scale of the velocity/sensitivity numbers is not fully
+documented - stay near the defaults above unless the user asks to
+experiment.
+
 ## Timers and elapsed time (the only clocks)
 
 - `gtt(self:ind(), ms)` arms this element's timer; after `ms`
@@ -94,7 +151,10 @@ held, which is how one timer serves several roles.
 - Pages: `gpc()` current, `gpl(n)` load, `gpn()` next, `gpp()` prev
 - LEDs: `self:glc(layer, {{r,g,b,1}})` color,
   `self:glp(layer, intensity)` value (0..255), `gls` animation type,
-  `glf` rate, `glt` timeout
+  `glf` rate, `glt` timeout. Layer `-1` = auto: 1 for
+  button/potmeter events, 2 for encoder events. The editor's
+  intensity block is just `self:glp(-1,-1)` (follow the element's
+  value)
 - Helpers: `glim(value,min,max)` clamp, `gmaps(...)` map+saturate,
   `grnd()` random 0..255, `sgn(x)` sign, `glut` lookup table
 - Output: `self:gms` MIDI, `gks` keyboard, `gmbs/gmms` mouse,
@@ -227,8 +287,12 @@ broadcast or targeted by dx, dy).
 
 Draw calls exist on the screen element: `self:ldft(text,x,y,size,rgb)`
 text, `self:ldaf(x1,y1,x2,y2,rgb)` filled area, `self:ldrr(...)`
-rounded rect outline, `self:ldsw()` swap framebuffer. Two rules that
-bite everyone:
+rounded rect outline, `self:ldsw()` swap framebuffer. Also
+available: `ldpx` pixel, `ldl` line, `ldr`/`ldrf` rectangle,
+`ldrrf` filled rounded rect, `ldpo`/`ldpof` polygon, `ldt` slower
+antialiased text. `self:lsw()` and `self:lsh()` return the screen
+size in pixels (VSN1: 320x240) - derive layout from them instead of
+hardcoding when convenient. Two rules that bite everyone:
 
 1. The profile's own draw loop repaints on every draw trigger
    (~25 ms). Anything painted from OUTSIDE the screen element's Draw
