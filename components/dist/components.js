@@ -142,6 +142,53 @@
     .ga-note { font-size:11px; line-height:1.45;
       color:var(--foreground-muted,#9d9d9d); }
     .ga-code { font-family:Consolas,monospace; font-size:10.5px; }
+
+    /* Setup guide ------------------------------------------------------ */
+    .ga-setup { display:flex; flex-direction:column; gap:10px;
+      min-height:260px; max-height:440px; overflow-y:auto;
+      padding:4px 2px; }
+    .ga-setup::-webkit-scrollbar { width:6px; }
+    .ga-setup::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12);
+      border-radius:3px; }
+    .ga-setup-head { display:flex; justify-content:space-between;
+      align-items:center; gap:8px; }
+    .ga-setup-title { font-weight:600; }
+    .ga-path { display:flex; flex-direction:column; gap:2px; width:100%;
+      text-align:left; padding:9px 12px; border-radius:8px; cursor:pointer;
+      color:var(--foreground,#ededed); background:rgba(255,255,255,0.04);
+      border:1px solid rgba(255,255,255,0.14); }
+    .ga-path:hover { border-color:rgba(${ACCENT},0.5);
+      background:rgba(${ACCENT},0.07); }
+    .ga-path b { font-size:12px; }
+    .ga-path span { font-size:11px;
+      color:var(--foreground-muted,#9d9d9d); line-height:1.45; }
+    .ga-step { display:flex; gap:10px; align-items:flex-start;
+      border:1px solid rgba(255,255,255,0.1); border-radius:8px;
+      padding:9px 11px; }
+    .ga-step-done { border-color:rgba(${ACCENT},0.45); }
+    .ga-step-dot { flex:none; width:20px; height:20px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      font-size:11px; font-weight:600; margin-top:1px;
+      color:var(--foreground-muted,#9d9d9d);
+      border:1px solid rgba(255,255,255,0.25); }
+    .ga-step-done .ga-step-dot { color:#0d1f19; border-color:transparent;
+      background:rgba(${ACCENT},0.9); }
+    .ga-step-main { display:flex; flex-direction:column; gap:5px;
+      min-width:0; flex:1; }
+    .ga-step-title { font-weight:600; }
+    .ga-step-body { font-size:11px; line-height:1.5;
+      color:var(--foreground-muted,#c4c4c4); white-space:pre-wrap; }
+    .ga-step-done .ga-step-body { color:var(--foreground-muted,#9d9d9d); }
+    .ga-cmd { display:flex; gap:6px; align-items:center; }
+    .ga-cmd code { flex:1; min-width:0; overflow-x:auto;
+      background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.1);
+      border-radius:6px; padding:6px 9px; white-space:nowrap;
+      user-select:text !important; -webkit-user-select:text !important; }
+    .ga-step-row { display:flex; gap:6px; flex-wrap:wrap;
+      align-items:center; }
+    .ga-model-btn { max-width:100%; overflow:hidden;
+      text-overflow:ellipsis; }
+    .ga-setup-ok { color:rgb(${ACCENT}); font-size:11px; }
   `;
 
   // Markdown-lite for assistant messages: escape everything first,
@@ -235,11 +282,15 @@
             <div class="ga-empty-title">Ask Tao Gunka about blocks,
               Lua, or your saved configs. Answers come from your own
               agent, on your machine.</div>
+            <button class="ga-chip ga-setup-open"
+              style="border-color:rgba(${ACCENT},0.55);">First time
+              here? Set up your assistant step by step</button>
             ${STARTERS.map(
               (s) => `<button class="ga-chip">${s}</button>`,
             ).join("")}
           </div>
         </div>
+        <div class="ga-setup" style="display:none;"></div>
         <div class="ga-composer">
           <textarea class="ga-input" rows="1"
             placeholder="Ask about your Grid setup…"></textarea>
@@ -253,6 +304,8 @@
             <option value="local">Local (Ollama / Kobold)</option>
           </select>
           <div class="ga-status" style="flex:1;margin:0 8px;"></div>
+          <button class="ga-new ga-setup-btn"
+            title="Step-by-step agent setup">Setup</button>
           <button class="ga-new">New chat</button>
         </div>
         <div class="ga-local" style="display:none;gap:6px;">
@@ -307,6 +360,21 @@
       this.current = null;
       this.cardSeq = 0;
       this.pendingCards = new Map();
+
+      this.setupBox = root.querySelector(".ga-setup");
+      this.composer = root.querySelector(".ga-composer");
+      this.setupOpen = false;
+      this.setupPath = null;
+      this.lastStatus = null;
+      this.lastProbe = null;
+      root
+        .querySelector(".ga-setup-open")
+        .addEventListener("click", () => this.openSetup());
+      root
+        .querySelector(".ga-setup-btn")
+        .addEventListener("click", () =>
+          this.setupOpen ? this.closeSetup() : this.openSetup(),
+        );
 
       this.localBox = root.querySelector(".ga-local");
       this.localUrl = root.querySelector(".ga-local-url");
@@ -522,6 +590,392 @@
       }
     }
 
+    // --- Setup guide --------------------------------------------------
+    // Three hand-holding paths; every step shows plain words, one
+    // action, and a live checkmark driven by the package's real
+    // environment checks. The last step of each path sends an actual
+    // chat, so "it works" means the real thing answered.
+
+    openSetup(path) {
+      this.setupOpen = true;
+      this.setupPath = path ?? this.setupPath;
+      this.log.style.display = "none";
+      this.composer.style.display = "none";
+      this.setupBox.style.display = "flex";
+      this.port?.postMessage({ type: "request-status" });
+      this.renderSetup();
+    }
+
+    closeSetup() {
+      this.setupOpen = false;
+      this.setupBox.style.display = "none";
+      this.log.style.display = "";
+      this.composer.style.display = "";
+    }
+
+    setupTerminalHint() {
+      const p = this.lastStatus?.platform;
+      if (p === "darwin") {
+        return "Open Terminal (press Cmd+Space, type Terminal, press Enter).";
+      }
+      if (p === "linux") {
+        return "Open a terminal window.";
+      }
+      return (
+        "Press the Windows key, type cmd, press Enter - a black " +
+        "window opens."
+      );
+    }
+
+    setupSteps() {
+      const s = this.lastStatus;
+      const paste =
+        this.lastStatus?.platform === "win32"
+          ? "right-click pastes it"
+          : "paste it";
+      if (this.setupPath === "claude") {
+        return {
+          label: "Claude (your Claude subscription)",
+          backend: "claude",
+          steps: [
+            {
+              title: "Get Claude Code onto this computer",
+              body:
+                "If you already use the Claude desktop app, this step is " +
+                "already done and shows a checkmark. If not: open your " +
+                "web browser, go to the address below, install the " +
+                "Claude desktop app and start it once.",
+              link: "claude.ai/download",
+              done: !!s?.backends?.claude,
+              recheck: true,
+            },
+            {
+              title: "Sign in once with your subscription",
+              body:
+                "Click the button. A terminal window opens with Claude " +
+                "Code running in it. Type /login and press Enter, choose " +
+                "the Claude account option (not the API key one), and " +
+                "finish the sign-in in the browser page that opens. Then " +
+                "close the terminal and come back here.",
+              action: {
+                label: "Open Claude sign-in",
+                msg: { type: "backend-login", backend: "claude" },
+              },
+            },
+            { test: true },
+          ],
+        };
+      }
+      if (this.setupPath === "codex") {
+        return {
+          label: "ChatGPT (your ChatGPT subscription)",
+          backend: "codex",
+          steps: [
+            {
+              title: "Install Node.js, one time",
+              body:
+                "Codex, the ChatGPT agent, needs Node.js to run. Open " +
+                "your web browser, go to the address below, click the " +
+                "big green LTS button, run the installer and click " +
+                "through it - the standard options are fine.",
+              link: "nodejs.org",
+              done: !!s?.npmFound,
+              recheck: true,
+            },
+            {
+              title: "Install Codex, one time",
+              body:
+                this.setupTerminalHint() +
+                " Copy the command below, " +
+                paste +
+                ", press Enter and wait until it finishes. Then click " +
+                "Check again.",
+              copy: "npm install -g @openai/codex",
+              done: !!s?.backends?.codex,
+              recheck: true,
+            },
+            {
+              title: "Sign in with your ChatGPT account",
+              body:
+                "Click the button. Your browser opens the ChatGPT " +
+                "sign-in; use the account that has your subscription " +
+                "and approve. This panel notices on its own when the " +
+                "sign-in completes.",
+              action: {
+                label: "Sign in with ChatGPT",
+                msg: { type: "backend-login", backend: "codex" },
+              },
+            },
+            { test: true },
+          ],
+        };
+      }
+      if (this.setupPath === "local") {
+        return {
+          label: "Local model (free, private, no account)",
+          backend: "local",
+          steps: [
+            {
+              title: "Install Ollama",
+              body:
+                "Ollama is a free program that runs AI models on your " +
+                "own computer. Open your web browser, go to the address " +
+                "below, download it for your system and run the " +
+                "installer.",
+              link: "ollama.com",
+              done: this.lastProbe?.ok === true,
+              probe: true,
+            },
+            {
+              title: "Download a model, one time",
+              body:
+                this.setupTerminalHint() +
+                " Copy the command below, " +
+                paste +
+                " and press Enter. It downloads about 8 GB once. When " +
+                "it finishes, click Check my local server - your " +
+                "models appear below, click one to use it.",
+              copy: "ollama pull gemma4:12b",
+              probe: true,
+              models: true,
+              done:
+                this.lastProbe?.ok === true &&
+                (this.lastProbe?.models?.length ?? 0) > 0 &&
+                !!this.lastStatus?.localModel,
+            },
+            { test: true },
+          ],
+        };
+      }
+      return null;
+    }
+
+    renderSetup() {
+      const box = this.setupBox;
+      box.textContent = "";
+      const head = document.createElement("div");
+      head.className = "ga-setup-head";
+      const title = document.createElement("div");
+      title.className = "ga-setup-title";
+      const back = document.createElement("button");
+      back.className = "ga-new";
+      head.appendChild(title);
+      head.appendChild(back);
+      box.appendChild(head);
+
+      const def = this.setupSteps();
+      if (!def) {
+        // Path chooser.
+        title.textContent = "Which subscription do you want to use?";
+        back.textContent = "Close";
+        back.addEventListener("click", () => this.closeSetup());
+        const paths = [
+          {
+            id: "claude",
+            name: "Claude",
+            desc:
+              "You pay for Claude (Pro or Max). Uses the Claude " +
+              "desktop app you may already have. Recommended.",
+          },
+          {
+            id: "codex",
+            name: "ChatGPT",
+            desc:
+              "You pay for ChatGPT (Plus or Pro). Two one-time " +
+              "installs, then sign in with your account.",
+          },
+          {
+            id: "local",
+            name: "Local model",
+            desc:
+              "No subscription, no account, nothing leaves this " +
+              "computer. Needs a decent graphics card to feel quick.",
+          },
+        ];
+        for (const p of paths) {
+          const btn = document.createElement("button");
+          btn.className = "ga-path";
+          const b = document.createElement("b");
+          b.textContent = p.name;
+          const span = document.createElement("span");
+          span.textContent = p.desc;
+          btn.appendChild(b);
+          btn.appendChild(span);
+          btn.addEventListener("click", () => {
+            this.setupPath = p.id;
+            const backend = p.id;
+            this.backendSel.value = backend;
+            this.port?.postMessage({ type: "set-backend", backend });
+            if (p.id === "local") {
+              this.port?.postMessage({ type: "probe-local" });
+            }
+            this.renderSetup();
+          });
+          box.appendChild(btn);
+        }
+        return;
+      }
+
+      title.textContent = def.label;
+      back.textContent = "Back";
+      back.addEventListener("click", () => {
+        this.setupPath = null;
+        this.renderSetup();
+      });
+
+      def.steps.forEach((step, i) => {
+        const row = document.createElement("div");
+        row.className = "ga-step" + (step.done ? " ga-step-done" : "");
+        const dot = document.createElement("div");
+        dot.className = "ga-step-dot";
+        dot.textContent = step.done ? "✓" : String(i + 1);
+        row.appendChild(dot);
+        const main = document.createElement("div");
+        main.className = "ga-step-main";
+        row.appendChild(main);
+
+        if (step.test) {
+          const t = document.createElement("div");
+          t.className = "ga-step-title";
+          t.textContent = "Try it";
+          main.appendChild(t);
+          const b = document.createElement("div");
+          b.className = "ga-step-body";
+          b.textContent =
+            "Click the button. The guide closes and a real question " +
+            "goes to your assistant; the answer appears in the chat. " +
+            "If it asks you to sign in instead, use the sign-in " +
+            "button it shows and try once more.";
+          main.appendChild(b);
+          const btn = document.createElement("button");
+          btn.className = "ga-card-btn";
+          btn.textContent = "Send a test question";
+          btn.addEventListener("click", () => {
+            this.backendSel.value = def.backend;
+            this.port?.postMessage({
+              type: "set-backend",
+              backend: def.backend,
+            });
+            this.closeSetup();
+            this.input.value =
+              "Answer with one short line: are you connected and ready " +
+              "to help with my Grid?";
+            this.send();
+          });
+          main.appendChild(btn);
+          box.appendChild(row);
+          return;
+        }
+
+        const t = document.createElement("div");
+        t.className = "ga-step-title";
+        t.textContent = step.title;
+        main.appendChild(t);
+        const b = document.createElement("div");
+        b.className = "ga-step-body";
+        b.textContent = step.body;
+        main.appendChild(b);
+
+        if (step.link) {
+          const cmd = document.createElement("div");
+          cmd.className = "ga-cmd";
+          const code = document.createElement("code");
+          code.textContent = step.link;
+          cmd.appendChild(code);
+          const cp = document.createElement("button");
+          cp.className = "ga-new";
+          cp.textContent = "Copy address";
+          cp.addEventListener("click", () =>
+            this.copyText(step.link, "Address copied"),
+          );
+          cmd.appendChild(cp);
+          main.appendChild(cmd);
+        }
+        if (step.copy) {
+          const cmd = document.createElement("div");
+          cmd.className = "ga-cmd";
+          const code = document.createElement("code");
+          code.textContent = step.copy;
+          cmd.appendChild(code);
+          const cp = document.createElement("button");
+          cp.className = "ga-new";
+          cp.textContent = "Copy command";
+          cp.addEventListener("click", () =>
+            this.copyText(step.copy, "Command copied"),
+          );
+          cmd.appendChild(cp);
+          main.appendChild(cmd);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "ga-step-row";
+        if (step.action) {
+          const btn = document.createElement("button");
+          btn.className = "ga-card-btn";
+          btn.textContent = step.action.label;
+          btn.addEventListener("click", () => {
+            btn.disabled = true;
+            btn.textContent = "Waiting…";
+            this.port?.postMessage(step.action.msg);
+            setTimeout(() => {
+              btn.disabled = false;
+              btn.textContent = step.action.label;
+            }, 60000);
+          });
+          actions.appendChild(btn);
+        }
+        if (step.recheck && !step.done) {
+          const btn = document.createElement("button");
+          btn.className = "ga-chip";
+          btn.textContent = "Check again";
+          btn.addEventListener("click", () => {
+            this.port?.postMessage({ type: "setup-recheck" });
+          });
+          actions.appendChild(btn);
+        }
+        if (step.probe) {
+          const btn = document.createElement("button");
+          btn.className = "ga-chip";
+          btn.textContent = "Check my local server";
+          btn.addEventListener("click", () => {
+            this.port?.postMessage({ type: "probe-local" });
+          });
+          actions.appendChild(btn);
+          if (this.lastProbe && !this.lastProbe.ok) {
+            const warn = document.createElement("span");
+            warn.className = "ga-step-body";
+            warn.textContent = "Not reachable yet.";
+            actions.appendChild(warn);
+          }
+        }
+        if (actions.childNodes.length) main.appendChild(actions);
+
+        if (step.models && this.lastProbe?.models?.length) {
+          const list = document.createElement("div");
+          list.className = "ga-step-row";
+          for (const name of this.lastProbe.models) {
+            const btn = document.createElement("button");
+            btn.className = "ga-chip ga-model-btn";
+            const picked = this.lastStatus?.localModel === name;
+            btn.textContent = (picked ? "✓ " : "") + name;
+            btn.addEventListener("click", () => {
+              this.localModel.value = name;
+              this.port?.postMessage({
+                type: "set-local-config",
+                url: this.localUrl.value || this.lastStatus?.localUrl || "",
+                model: name,
+              });
+              this.port?.postMessage({ type: "request-status" });
+            });
+            list.appendChild(btn);
+          }
+          main.appendChild(list);
+        }
+
+        box.appendChild(row);
+      });
+    }
+
     send() {
       const prompt = this.input.value.trim();
       if (!prompt || this.busy) return;
@@ -566,7 +1020,12 @@
         const el = this.addMsg("ai", msg.message);
         el.classList.add("ga-error");
         this.finish();
+      } else if (msg.type === "local-probe") {
+        this.lastProbe = msg;
+        if (this.setupOpen) this.renderSetup();
       } else if (msg.type === "agent-status") {
+        this.lastStatus = msg;
+        if (this.setupOpen) this.renderSetup();
         if (this.shareToggle) this.shareToggle.checked = !!msg.shareProfiles;
         if (this.shareLabel) {
           this.shareLabel.textContent = msg.profilesFound

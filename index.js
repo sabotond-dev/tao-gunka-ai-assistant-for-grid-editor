@@ -185,6 +185,63 @@ function resolveNpmCli(overrideEnv, cmdName) {
   return { cmd: cmdName, preArgs: [], found };
 }
 
+// npm's presence gates the Codex path in the setup guide. One real
+// check (spawn npm --version), cached; the guide's "Check again"
+// clears the cache after the user installs Node.
+let npmFoundCache;
+function npmFound() {
+  if (npmFoundCache === undefined) {
+    try {
+      const r =
+        process.platform === "win32"
+          ? spawnSync("cmd.exe", ["/c", "npm --version"], {
+              windowsHide: true,
+              timeout: 5000,
+            })
+          : spawnSync("npm", ["--version"], { timeout: 5000 });
+      npmFoundCache = r.status === 0;
+    } catch (e) {
+      npmFoundCache = false;
+    }
+  }
+  return npmFoundCache;
+}
+
+// The setup guide's local step: is the server there, and which models
+// does it offer? Ollama answers /api/tags with names; OpenAI-style
+// servers answer /v1/models. Either way the panel gets a list to
+// click instead of a name to type.
+async function probeLocal() {
+  const base = localUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+  const grab = async (url, pick) => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2500);
+    try {
+      const res = await fetch(url, { signal: ctl.signal });
+      if (!res.ok) return undefined;
+      return pick(await res.json());
+    } catch (e) {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let models = await grab(`${base}/api/tags`, (j) =>
+    (j.models ?? []).map((m) => m.name).filter(Boolean),
+  );
+  if (models === undefined) {
+    models = await grab(`${base}/v1/models`, (j) =>
+      (j.data ?? []).map((m) => m.id).filter(Boolean),
+    );
+  }
+  toPanel({
+    type: "local-probe",
+    ok: models !== undefined,
+    models: (models ?? []).slice(0, 20),
+    url: localUrl,
+  });
+}
+
 function backendAvailability() {
   const claudeResolved = resolveAgentCli();
   let claude =
@@ -1350,6 +1407,8 @@ function sendAgentStatus() {
     blocks: agentBlocks.map((b) => ({ short: b.short, name: b.name })),
     localUrl,
     localModel,
+    platform: process.platform,
+    npmFound: npmFound(),
   });
 }
 
@@ -1479,6 +1538,13 @@ exports.addMessagePort = async function (port, senderId) {
       sendAgentStatus();
     } else if (msg?.type === "request-status") {
       sendAgentStatus();
+    } else if (msg?.type === "setup-recheck") {
+      // The guide's "Check again": re-run the cached environment
+      // checks after the user installed something.
+      npmFoundCache = undefined;
+      sendAgentStatus();
+    } else if (msg?.type === "probe-local") {
+      probeLocal();
     }
   });
   port.start();

@@ -713,6 +713,59 @@ async function waitFor(port, type, timeoutMs) {
       mcpArgs.some((a) => /mcp__grid__grid_status/.test(a)) &&
         mcpArgs.some((a) => /grid_element_values reads the current value/.test(a)),
     );
+
+    // --- Setup guide plumbing -----------------------------------------
+    port.received.length = 0;
+    port.emit({ type: "request-status" });
+    await sleep(150);
+    const setupSt = port.received.find((m) => m.type === "agent-status");
+    check(
+      "status carries platform and npm detection",
+      typeof setupSt?.platform === "string" &&
+        typeof setupSt?.npmFound === "boolean",
+    );
+    port.received.length = 0;
+    port.emit({ type: "setup-recheck" });
+    const rechecked = await waitFor(port, "agent-status", 8000);
+    check("setup-recheck answers with a fresh status", rechecked);
+
+    // probe-local: an Ollama-shaped server yields its model list...
+    const tagsServer = require("http").createServer((req, res) => {
+      if (req.url === "/api/tags") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ models: [{ name: "gemma4:12b" }] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise((r) => tagsServer.listen(0, "127.0.0.1", r));
+    port.emit({
+      type: "set-local-config",
+      url: `http://127.0.0.1:${tagsServer.address().port}/v1`,
+      model: "",
+    });
+    port.received.length = 0;
+    port.emit({ type: "probe-local" });
+    await waitFor(port, "local-probe", 8000);
+    const probeOk = port.received.find((m) => m.type === "local-probe");
+    check(
+      "probe-local lists the local server's models",
+      probeOk?.ok === true && probeOk.models?.includes("gemma4:12b"),
+    );
+    tagsServer.close();
+
+    // ...and a dead server reports not-reachable instead of hanging.
+    port.emit({
+      type: "set-local-config",
+      url: "http://127.0.0.1:1/v1",
+      model: "",
+    });
+    port.received.length = 0;
+    port.emit({ type: "probe-local" });
+    await waitFor(port, "local-probe", 8000);
+    const probeDead = port.received.find((m) => m.type === "local-probe");
+    check("probe-local reports an unreachable server", probeDead?.ok === false);
   }
 
   const portBeforeUnload = pkg._mcpInfo().port;

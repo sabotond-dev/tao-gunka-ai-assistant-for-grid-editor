@@ -43,18 +43,24 @@ server of its own, and adds no cost beyond what you already run.
 
 1. Install this package in the Grid Editor's package manager and open
    its preferences. The chat is right there.
-2. Connect an agent, one time:
-   - **Claude Code**: if you use the Claude desktop app, the CLI is
-     already on your machine. Ask the assistant anything and it will
-     offer a sign-in button; run `/login` in the terminal it opens and
-     pick the subscription sign-in.
-   - **Codex**: `npm install -g @openai/codex` in a terminal, then ask
-     anything and click "Sign in with ChatGPT" when offered.
-   - **Local**: start your server (Ollama, KoboldCpp, LM Studio),
-     pick Local in the dropdown, and set the URL and model in the row
-     that appears. No sign-in at all.
-3. Pick the agent in the dropdown under the chat. That is the whole
-   setup.
+2. Click **"First time here? Set up your assistant step by step"** (or
+   the Setup button next to New chat). The guide walks you through
+   connecting your Claude subscription, your ChatGPT subscription, or
+   a free local model - every step in plain words, with checkmarks
+   that tick themselves as the guide detects your progress, and a
+   test question at the end so you know it works.
+
+For the impatient, the short versions:
+
+- **Claude Code**: if you use the Claude desktop app, the CLI is
+  already on your machine. Ask the assistant anything and it will
+  offer a sign-in button; run `/login` in the terminal it opens and
+  pick the subscription sign-in.
+- **Codex**: `npm install -g @openai/codex` in a terminal, then ask
+  anything and click "Sign in with ChatGPT" when offered.
+- **Local**: start your server (Ollama, KoboldCpp, LM Studio),
+  pick Local in the dropdown, and set the URL and model in the row
+  that appears. No sign-in at all.
 
 On Linux, run the Editor as the AppImage or deb build: a flatpak
 Editor is sandboxed away from the host's agent CLIs, so the CLI
