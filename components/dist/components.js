@@ -356,7 +356,7 @@
           <div class="ga-status" style="flex:1;margin:0 8px;"></div>
           <button class="ga-new ga-setup-btn"
             title="Step-by-step agent setup">Setup</button>
-          <button class="ga-new">New chat</button>
+          <button class="ga-new ga-chat-new">New chat</button>
         </div>
         <div class="ga-local" style="display:none;gap:6px;">
           <input class="ga-input ga-local-url" type="text"
@@ -477,7 +477,7 @@
           }, 3000);
         }
       });
-      root.querySelector(".ga-new").addEventListener("click", () => {
+      root.querySelector(".ga-chat-new").addEventListener("click", () => {
         this.port?.postMessage({ type: "chat-new" });
         for (const el of [...this.log.children]) {
           if (el !== this.empty) el.remove();
