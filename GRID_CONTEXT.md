@@ -27,6 +27,31 @@ Encoder / Endless (movement), Draw (screen repaint), Timer, and a
 system-level Utility/Mapmode event. Pages let one element carry
 different configs; packages can switch pages via the editor.
 
+## The product family (facts from intech.studio, July 2026)
+
+- Grid is a modular creative controller for musicians, producers,
+  video editors and digital artists - any MIDI-capable software, not
+  only DAWs. One USB-C cable powers the whole chain; up to 8 modules
+  per cable (beyond that, add power), no hub, no drivers. Modules
+  join with golden magnets and pins.
+- Hardware feel: potmeters turn 300 degrees; detent encoders click
+  20 steps per turn and push; endless encoders spin freely with a
+  5-segment LED ring and metal knobs; EF44 faders travel 60 mm, PBF4
+  faders 30 mm; VSN's screen is 320x240 RGB.
+- Four config pages live in onboard memory, switchable on the fly -
+  that is what gpc/gpl/gpn/gpp address.
+- **Knot** ($99) is Intech's standalone USB MIDI host, 60x60x10 mm:
+  USB-A HOST in, TRS MIDI IN/OUT, USB-C power, 6-12V DC in. HOST
+  mode routes a USB controller straight to TRS OUT, MERGE combines
+  TRS IN + USB, SYNC passes MIDI clock; A/B switch picks TRS wiring.
+  Grid + Knot = a stored config driving hardware synths with NO
+  computer at all - the strongest reason generated configs must
+  never depend on the Editor.
+- US shop prices (USD, July 2026 - say they may have changed):
+  PO16 / BU16 / PBF4 $159; EN16 / EF44 $189; TEK2 $239; VSN1 $269;
+  VSN2 $199; Knot $99. DIY kits $119-149. Accessories: Eurorack
+  adapter $29, module stand $29, travel case $49.
+
 ## Element Lua essentials
 
 - `self` is the element the script runs on. Persistent per-element
