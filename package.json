@@ -1,6 +1,6 @@
 {
   "name": "package-grid-agent",
-  "version": "0.22.1",
+  "version": "1.0.0",
   "description": "Tao Gunka - AI assistant for the Grid Editor",
   "main": "index.js",
   "scripts": {
