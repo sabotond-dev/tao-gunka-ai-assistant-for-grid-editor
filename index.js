@@ -2149,6 +2149,16 @@ exports.addMessagePort = async function (port, senderId) {
   });
   port.start();
   sendAgentStatus();
+  // The idol art rides the port once per connect: 60 KB of hand-traced
+  // SVG is too heavy to inline in the component bundle.
+  try {
+    toPanel({
+      type: "idol-svg",
+      svg: fs.readFileSync(path.join(__dirname, "tao-gunka-logo.svg"), "utf8"),
+    });
+  } catch (e) {
+    /* art missing: the panel thinks in words alone */
+  }
   if (transcript.length > 0) {
     toPanel({ type: "chat-history", turns: transcript });
   }

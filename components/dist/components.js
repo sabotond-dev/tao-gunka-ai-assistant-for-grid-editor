@@ -127,14 +127,26 @@
       align-items:center; min-height:22px; gap:6px; }
     .ga-status { font-size:11px; color:var(--ga-muted);
       font-variant-numeric:tabular-nums; }
-    .ga-thinking i { display:inline-block; width:4px; height:4px;
-      margin-left:3px; border-radius:50%;
-      background:var(--ga-acc); animation:ga-blink 1.2s infinite;
-      font-style:normal; }
-    .ga-thinking i:nth-child(2) { animation-delay:0.2s; }
-    .ga-thinking i:nth-child(3) { animation-delay:0.4s; }
-    @keyframes ga-blink { 0%,80%,100% { opacity:0.2; }
-      40% { opacity:1; } }
+    /* Thinking: the idol rumbles in the log while words cycle */
+    .ga-think { display:flex; align-items:center; gap:12px;
+      padding:2px 0; }
+    .ga-think-idol { width:46px; height:46px; flex:none;
+      animation:ga-rumble 0.9s infinite; }
+    .ga-think-idol svg { width:100%; height:100%; display:block; }
+    @keyframes ga-rumble {
+      0%,100% { transform:translate(0,0) rotate(0); }
+      15% { transform:translate(-1px,1px) rotate(-1.2deg); }
+      30% { transform:translate(1px,-1px) rotate(1deg); }
+      45% { transform:translate(-1px,-1px) rotate(0.6deg); }
+      60% { transform:translate(1px,1px) rotate(-0.8deg); }
+      75% { transform:translate(-1px,0) rotate(1.2deg); }
+      90% { transform:translate(1px,0) rotate(-0.6deg); } }
+    .ga-think-word { font-family:var(--ga-mono); font-size:11px;
+      color:var(--ga-muted);
+      animation:ga-word-in 0.3s cubic-bezier(.22,1,.36,1); }
+    @keyframes ga-word-in {
+      from { opacity:0; transform:translateY(3px); }
+      to { opacity:1; transform:none; } }
     .ga-new { padding:4px 11px; border-radius:6px; cursor:pointer;
       font-size:11px; color:var(--ga-muted);
       background:transparent; border:1px solid var(--ga-line-strong);
@@ -264,6 +276,19 @@
     text = text.replace(/\u0000(\d+)\u0000/g, (m, i) => blocks[Number(i)]);
     return text;
   }
+
+  // While the stone thinks. Dry, one purpose each, a single nod to
+  // the party wall it is named after.
+  const THINKING_WORDS = [
+    "Rumbling",
+    "Grinding stone",
+    "Carving Lua",
+    "Consulting the reference",
+    "Listening to the chain",
+    "Stacking basalt",
+    "Weathering patiently",
+    "Guarding the party",
+  ];
 
   const STARTERS = [
     "What do my saved configs do?",
@@ -549,6 +574,46 @@
       if (force || this.nearBottom()) {
         this.log.scrollTop = this.log.scrollHeight;
       }
+    }
+
+    // The in-log thinking block: the idol rumbles, words cycle under
+    // it. Removed the moment the first real chunk lands.
+    showThinking() {
+      this.hideThinking();
+      this.empty.style.display = "none";
+      const wrap = document.createElement("div");
+      wrap.className = "ga-wrap ga-wrap-ai";
+      const block = document.createElement("div");
+      block.className = "ga-think";
+      if (this.idolSvg) {
+        const idol = document.createElement("div");
+        idol.className = "ga-think-idol";
+        idol.innerHTML = this.idolSvg;
+        block.appendChild(idol);
+      }
+      const word = document.createElement("div");
+      word.className = "ga-think-word";
+      let i = Math.floor(Math.random() * THINKING_WORDS.length);
+      word.textContent = `${THINKING_WORDS[i]}…`;
+      block.appendChild(word);
+      wrap.appendChild(block);
+      this.log.appendChild(wrap);
+      this.scrollDown(true);
+      this._thinkEl = wrap;
+      this._thinkTimer = setInterval(() => {
+        i = (i + 1) % THINKING_WORDS.length;
+        word.textContent = `${THINKING_WORDS[i]}…`;
+        word.style.animation = "none";
+        void word.offsetWidth;
+        word.style.animation = "";
+      }, 1700);
+    }
+
+    hideThinking() {
+      clearInterval(this._thinkTimer);
+      this._thinkTimer = undefined;
+      this._thinkEl?.remove();
+      this._thinkEl = undefined;
     }
 
     addMsg(kind, text) {
@@ -1114,12 +1179,13 @@
       this.addMsg("user", prompt);
       this.current = null;
       this.currentRaw = "";
-      this.status.innerHTML =
-        'Thinking<span class="ga-thinking"><i></i><i></i><i></i></span>';
+      this.status.textContent = "";
+      this.showThinking();
       this.port?.postMessage({ type: "chat", prompt });
     }
 
     finish(statusText) {
+      this.hideThinking();
       this.busy = false;
       this.sendBtn.textContent = "Send";
       this.sendBtn.classList.remove("ga-stop");
@@ -1131,7 +1197,10 @@
     onPortMessage(msg) {
       if (!msg) return;
       if (msg.type === "chat-chunk") {
-        if (!this.current) this.current = this.addMsg("ai", "");
+        if (!this.current) {
+          this.hideThinking();
+          this.current = this.addMsg("ai", "");
+        }
         this.currentRaw = (this.currentRaw ?? "") + msg.text;
         this.current._raw = this.currentRaw;
         this.current.innerHTML = renderMarkdown(this.currentRaw);
@@ -1169,6 +1238,10 @@
         );
         if (!msg.ok) el.classList.add("ga-error");
         this.scrollDown(true);
+      } else if (msg.type === "idol-svg") {
+        if (typeof msg.svg === "string" && msg.svg.startsWith("<svg")) {
+          this.idolSvg = msg.svg;
+        }
       } else if (msg.type === "local-probe") {
         this.lastProbe = msg;
         if (this.setupOpen) this.renderSetup();

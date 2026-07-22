@@ -748,6 +748,16 @@ async function waitFor(port, type, timeoutMs) {
         mcpArgs.some((a) => /grid_element_values reads the current value/.test(a)),
     );
 
+    // Idol art rides the port on every panel connect.
+    port.received.length = 0;
+    await pkg.addMessagePort(port, "grid-agent-chat");
+    check(
+      "idol svg delivered on connect",
+      port.received.some(
+        (m) => m.type === "idol-svg" && /^<svg/.test(m.svg ?? ""),
+      ),
+    );
+
     // --- Live-context prefetch ----------------------------------------
     // A chat first broadcasts the probe; a module reply lands in the
     // system prompt. The cache then serves the next question without a
