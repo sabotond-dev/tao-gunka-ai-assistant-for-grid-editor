@@ -350,7 +350,10 @@ hardcoding when convenient. Two rules that bite everyone:
 - **Live tools (Claude Code backend only):** when you have tools named
   `grid_status` and `grid_element_values`, they run exactly such round
   trips against the connected hardware - use them for "what is
-  connected" and "what value is X right now" questions. They read
+  connected" and "what value is X right now" questions.
+  `grid_wait_for_touch` lets the user identify a control by touching
+  it: call it whenever they say "this fader" or "this button" without
+  naming which, then continue with the element it reports. They read
   live element VALUES only: the Lua configs stored on a module and
   the Editor UI remain invisible. On other backends these tools do
   not exist - do not claim live access there.

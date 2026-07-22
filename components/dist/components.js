@@ -244,6 +244,14 @@
       text-overflow:ellipsis; font-family:var(--ga-mono); }
     .ga-setup-ok { color:var(--ga-acc); font-size:11px; }
 
+    /* Point (wiggle-to-select) */
+    .ga-point { align-self:flex-end; padding:8px 11px; }
+    .ga-point-armed { color:var(--ga-acc);
+      border-color:var(--ga-acc) !important;
+      animation:ga-point-pulse 1.2s infinite; }
+    @keyframes ga-point-pulse { 0%,100% { opacity:1; }
+      50% { opacity:0.55; } }
+
   `;
 
   // Markdown-lite for assistant messages: escape everything first,
@@ -367,6 +375,8 @@
         </div>
         <div class="ga-setup" style="display:none;"></div>
         <div class="ga-composer">
+          <button class="ga-new ga-point" title="Wiggle a control on your
+            Grid to select it (experimental)">Point</button>
           <textarea class="ga-input" rows="1"
             placeholder="Ask about your Grid setup…"></textarea>
           <button class="ga-send">Send</button>
@@ -509,6 +519,13 @@
         }
         this.empty.style.display = "";
         this.finish("");
+      });
+      this.pointBtn = root.querySelector(".ga-point");
+      this._teachArmed = false;
+      this.pointBtn.addEventListener("click", () => {
+        this.port?.postMessage({
+          type: this._teachArmed ? "teach-cancel" : "teach-start",
+        });
       });
       this.sendBtn.addEventListener("click", () => {
         if (this.busy) {
@@ -1238,6 +1255,35 @@
         );
         if (!msg.ok) el.classList.add("ga-error");
         this.scrollDown(true);
+      } else if (msg.type === "teach-armed") {
+        this._teachArmed = true;
+        this.pointBtn.classList.add("ga-point-armed");
+        this.pointBtn.textContent = "Wiggle it…";
+        this.flashStatus("Touch the control you mean on your Grid");
+      } else if (msg.type === "teach-result") {
+        this._teachArmed = false;
+        this.pointBtn.classList.remove("ga-point-armed");
+        this.pointBtn.textContent = "Point";
+        if (msg.ok) {
+          const kinds = {
+            b: "button",
+            p: "potmeter",
+            e: "encoder",
+            ep: "endless knob",
+          };
+          const phrase =
+            `On my module at (${msg.dx},${msg.dy}), the ` +
+            `${kinds[msg.kind] ?? "element"} at element ${msg.index} ` +
+            `(the one I just touched): `;
+          this.input.value = this.input.value
+            ? `${this.input.value.trimEnd()} ${phrase}`
+            : phrase;
+          this.autoGrow();
+          this.input.focus();
+          this.flashStatus("Got it");
+        } else if (msg.timeout) {
+          this.flashStatus("Nothing touched - stopped listening");
+        }
       } else if (msg.type === "idol-svg") {
         if (typeof msg.svg === "string" && msg.svg.startsWith("<svg")) {
           this.idolSvg = msg.svg;

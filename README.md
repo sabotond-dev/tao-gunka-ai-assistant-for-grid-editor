@@ -26,6 +26,12 @@ server of its own, and adds no cost beyond what you already run.
   NRPN, pressure-sensitive buttons, LEDs, timers, screen drawing,
   and the pitfalls everyone hits once. It knows the product line
   too, Knot included.
+- **Understands "this one."** Click Point and wiggle any control -
+  the chat continues with exactly that element selected, no indices,
+  no positions. On the Claude Code backend the assistant can also ask
+  you to touch the control mid-conversation when you say "this fader"
+  without naming it. Experimental: it borrows the control's event
+  handler for a few seconds and puts it back untouched.
 - **Reads your saved configs.** Ask "what does my VSN1 profile draw?"
   and it opens the file instead of asking you to paste anything. A
   toggle in the panel controls this, and shows exactly how many files

@@ -592,8 +592,9 @@ async function waitFor(port, type, timeoutMs) {
       await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list" })
     ).json();
     check(
-      "mcp lists the four live tools",
-      list.result?.tools?.length === 4 &&
+      "mcp lists the five live tools",
+      list.result?.tools?.length === 5 &&
+        list.result.tools.some((t) => t.name === "grid_wait_for_touch") &&
         list.result.tools.some((t) => t.name === "grid_status") &&
         list.result.tools.some((t) => t.name === "grid_element_values") &&
         list.result.tools.some((t) => t.name === "grid_module_files") &&
@@ -985,6 +986,77 @@ async function waitFor(port, type, timeoutMs) {
     const pBad = port.received.find((m) => m.type === "profile-created");
     check("unknown module type refused", pBad?.ok === false);
     delete process.env.GRID_AGENT_PROFILES_DIR;
+
+    // --- Teach mode (wiggle-to-select) --------------------------------
+    // Panel path: arm, fake a touch from the module side, expect the
+    // result plus a restore broadcast.
+    port.received.length = 0;
+    editorMsgs.length = 0;
+    port.emit({ type: "teach-start" });
+    await sleep(100);
+    const installMsg = editorMsgs.find(
+      (m) => m.type === "execute-lua-script" && /tgt=\{\}/.test(m.script),
+    );
+    check(
+      "teach installs capture handlers and arms the panel",
+      !!installMsg &&
+        /tgt\[i\.\.k\]=e\[k\]/.test(installMsg.script) &&
+        port.received.some((m) => m.type === "teach-armed"),
+    );
+    const teachId = /"tch","([a-z0-9]+)"/.exec(installMsg?.script ?? "")?.[1];
+    await pkg.sendMessage(["tch", teachId, 1, 0, 6, "p"]);
+    await sleep(100);
+    const teachRes = port.received.find((m) => m.type === "teach-result");
+    check(
+      "touch resolves with the element and restores handlers",
+      teachRes?.ok === true &&
+        teachRes.dx === 1 &&
+        teachRes.index === 6 &&
+        teachRes.kind === "p" &&
+        editorMsgs.some(
+          (m) =>
+            m.type === "execute-lua-script" && /e\[k\]=tgt\[i\.\.k\]/.test(m.script),
+        ),
+    );
+    // Timeout path also restores.
+    port.received.length = 0;
+    editorMsgs.length = 0;
+    port.emit({ type: "teach-start", timeoutMs: 1000 });
+    await waitFor(port, "teach-result", 5000);
+    const teachTimeout = port.received.find((m) => m.type === "teach-result");
+    check(
+      "untouched teach times out and restores",
+      teachTimeout?.ok === false &&
+        teachTimeout.timeout === true &&
+        editorMsgs.some(
+          (m) =>
+            m.type === "execute-lua-script" && /e\[k\]=tgt\[i\.\.k\]/.test(m.script),
+        ),
+    );
+    // Agent path: the MCP tool wraps the same flow.
+    editorMsgs.length = 0;
+    const touchPromise = mcpPost({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "grid_wait_for_touch", arguments: {} },
+    });
+    let tMsg;
+    for (let i = 0; i < 20 && !tMsg; i++) {
+      await sleep(50);
+      tMsg = editorMsgs.find(
+        (m) => m.type === "execute-lua-script" && /"tch"/.test(m.script),
+      );
+    }
+    const tId = /"tch","([a-z0-9]+)"/.exec(tMsg?.script ?? "")?.[1];
+    await pkg.sendMessage(["tch", tId, 0, 0, 3, "ep"]);
+    const touchOut = await (await touchPromise).json();
+    check(
+      "wait-for-touch tool reports the touched element",
+      /endless knob at element index 3 on the module at dx=0/.test(
+        touchOut.result?.content?.[0]?.text ?? "",
+      ),
+    );
 
     // verify-login: the probe runs the real headless spawn shape and
     // reports the raw outcome either way.

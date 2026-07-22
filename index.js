@@ -49,10 +49,13 @@ function buildSystemPrompt(profilesDir, liveTools) {
   }
   if (liveTools) {
     parts.push(
-      "Two live hardware tools are available: grid_status lists the",
-      "modules connected right now (position, page, element count) and",
+      "Live hardware tools are available: grid_status lists the",
+      "modules connected right now (position, page, element count),",
       "grid_element_values reads the current value of every element on",
-      "one module. Use them whenever the question concerns current",
+      "one module, and grid_wait_for_touch lets the user identify a",
+      "control by touching it - use it whenever they say 'this",
+      "fader/button/knob' without saying which. Use them whenever the",
+      "question concerns current",
       "hardware state. They read live VALUES only - the Lua configs",
       "stored on a module remain unreadable, and you still cannot see",
       "the Editor UI; say so when it matters.",
@@ -700,7 +703,8 @@ function runChatClaude(prompt, live, isRetry) {
     "Read,Glob,Grep" +
       (withMcp
         ? ",mcp__grid__grid_status,mcp__grid__grid_element_values" +
-          ",mcp__grid__grid_module_files,mcp__grid__grid_read_module_file"
+          ",mcp__grid__grid_module_files,mcp__grid__grid_read_module_file" +
+          ",mcp__grid__grid_wait_for_touch"
         : ""),
     "--append-system-prompt",
     buildSystemPrompt(withProfiles ? profilesDir : undefined, withMcp) +
@@ -1451,6 +1455,74 @@ const ELEMENT_TYPE_NAMES = {
   s: "system/screen",
 };
 
+// --- Teach mode (wiggle-to-select) -----------------------------------
+// The user identifies a control by touching it. A broadcast script
+// SAVES every element's event handlers into a module-global table,
+// swaps in reporters that gps back which element moved, and the
+// first touch (or timeout, or cancel) triggers a restore broadcast
+// that puts the originals back - unlike a tryout, nothing survives.
+// EXPERIMENTAL: rides the same handler-override mechanism as Try now.
+
+let teachState; // {id, finish, timer}
+
+const TEACH_KINDS = {
+  b: "button",
+  p: "potmeter",
+  e: "encoder",
+  ep: "endless knob",
+};
+
+const teachInstallScript = (id) =>
+  `if not tgt then tgt={} for i=0,gec()-1 do local e=element[i] ` +
+  `if e then for k,v in pairs({bc="b",pc="p",ec="e",epc="ep"}) do ` +
+  `if e[k] then tgt[i..k]=e[k] e[k]=function(s) ` +
+  `gps("package-grid-agent","tch","${id}",gmx(),gmy(),i,v) end end ` +
+  `end end end end`;
+const teachRestoreScript =
+  `if tgt then for i=0,gec()-1 do local e=element[i] if e then ` +
+  `for k in pairs({bc=1,pc=1,ec=1,epc=1}) do if tgt[i..k] then ` +
+  `e[k]=tgt[i..k] end end end end tgt=nil end`;
+
+function startTeach(timeoutMs) {
+  return new Promise((resolve) => {
+    if (!controller || packageShutDown) {
+      resolve({ ok: false, error: "editor not connected" });
+      return;
+    }
+    if (teachState) {
+      resolve({ ok: false, error: "already listening" });
+      return;
+    }
+    const id =
+      "t" + (ctxSeq++).toString(36) + crypto.randomBytes(2).toString("hex");
+    const finish = (result) => {
+      if (!teachState || teachState.id !== id) return;
+      clearTimeout(teachState.timer);
+      teachState = undefined;
+      controller?.sendMessageToEditor({
+        type: "execute-lua-script",
+        script: teachRestoreScript,
+      });
+      toPanel({ type: "teach-result", ...result });
+      resolve(result);
+    };
+    teachState = {
+      id,
+      finish,
+      timer: setTimeout(() => finish({ ok: false, timeout: true }), timeoutMs),
+    };
+    controller.sendMessageToEditor({
+      type: "execute-lua-script",
+      script: teachInstallScript(id),
+    });
+    toPanel({ type: "teach-armed" });
+  });
+}
+
+function cancelTeach() {
+  teachState?.finish({ ok: false, cancelled: true });
+}
+
 // Prefetched live context: every question starts with a fresh (or
 // recently cached) broadcast probe, so the agent knows what hardware
 // is connected without being asked to check. The probe is the same
@@ -1623,6 +1695,18 @@ const MCP_TOOLS = [
     },
   },
   {
+    name: "grid_wait_for_touch",
+    description:
+      "Ask the user to physically touch or wiggle the Grid control " +
+      "they mean, and learn which one it was. Listens for up to 20 " +
+      "seconds and reports the module position, element index and " +
+      "element kind of the first control touched. Use whenever the " +
+      "user says 'this fader', 'this button' or similar without " +
+      "identifying it. EXPERIMENTAL: temporarily swaps event handlers " +
+      "in module RAM and restores them right after.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "grid_module_files",
     description:
       "EXPERIMENTAL: list a directory on one module's internal " +
@@ -1683,6 +1767,21 @@ async function mcpDispatch(rpc) {
           Number(args.dx) || 0,
           Number(args.dy) || 0,
         );
+      } else if (name === "grid_wait_for_touch") {
+        const r = await startTeach(20000);
+        if (r.ok) {
+          text =
+            `The user touched the ${TEACH_KINDS[r.kind] ?? r.kind} at ` +
+            `element index ${r.index} on the module at dx=${r.dx}, ` +
+            `dy=${r.dy}. Continue with exactly that element.`;
+        } else if (r.timeout) {
+          text =
+            "No control was touched within 20 seconds. Either the " +
+            "user did not wiggle anything, or this firmware does not " +
+            "allow the capture - ask them to name the control instead.";
+        } else {
+          text = `Could not listen: ${r.error ?? "cancelled"}.`;
+        }
       } else if (name === "grid_module_files") {
         text = await toolModuleFs(
           Number(args.dx) || 0,
@@ -2053,6 +2152,7 @@ exports.unloadPackage = async function () {
     if (state.timer) clearTimeout(state.timer);
   }
   relayState.clear();
+  cancelTeach();
   removeConfigMirror();
   stopMcpServer();
   chatPort?.close();
@@ -2145,6 +2245,11 @@ exports.addMessagePort = async function (port, senderId) {
       sendAgentStatus();
     } else if (msg?.type === "probe-local") {
       probeLocal();
+    } else if (msg?.type === "teach-start") {
+      const ms = Math.min(60000, Math.max(1000, Number(msg.timeoutMs) || 20000));
+      startTeach(ms);
+    } else if (msg?.type === "teach-cancel") {
+      cancelTeach();
     }
   });
   port.start();
@@ -2183,5 +2288,15 @@ exports.sendMessage = async function (args) {
     relayValue(args[1], Number(args[2]));
   } else if (args[0] === "ctx") {
     ctxReply(args);
+  } else if (args[0] === "tch") {
+    if (teachState && String(args[1]) === teachState.id) {
+      teachState.finish({
+        ok: true,
+        dx: Number(args[2]),
+        dy: Number(args[3]),
+        index: Number(args[4]),
+        kind: String(args[5]),
+      });
+    }
   }
 };
