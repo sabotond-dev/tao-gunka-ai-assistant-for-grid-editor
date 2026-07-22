@@ -356,7 +356,20 @@ function writeContextFiles() {
   } catch (e) {
     /* reference missing: ship the brief alone */
   }
-  const content = `${brief}\n\n${reference}\n`;
+  // Codex demonstrably skips "read this file" pointers, so the
+  // official API annotations ride inline too (hardware lesson from
+  // the reference itself). Local models never see this file; their
+  // context budget gets the curated reference only.
+  let api = "";
+  try {
+    api =
+      "\n\n## GRID_API.lua (official annotations, inlined)\n\n```lua\n" +
+      fs.readFileSync(path.join(__dirname, "GRID_API.lua"), "utf8") +
+      "\n```\n";
+  } catch (e) {
+    /* annotations missing: the pointer in the reference still works */
+  }
+  const content = `${brief}\n\n${reference}${api}\n`;
   for (const name of ["AGENTS.md", "GEMINI.md"]) {
     try {
       fs.writeFileSync(path.join(__dirname, name), content);

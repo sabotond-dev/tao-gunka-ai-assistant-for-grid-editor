@@ -382,6 +382,11 @@ async function waitFor(port, type, timeoutMs) {
         /Creating action blocks/.test(agentsMd) &&
         /Do not imitate Lua/.test(agentsMd),
     );
+    check(
+      "AGENTS.md inlines the official API annotations",
+      /GRID_API\.lua \(official annotations, inlined\)/.test(agentsMd) &&
+        /@alias EventType/.test(agentsMd),
+    );
 
     // Delete removes the palette action.
     editorMsgs.length = 0;

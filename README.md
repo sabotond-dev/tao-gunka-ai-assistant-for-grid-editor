@@ -56,11 +56,28 @@ server of its own, and adds no cost beyond what you already run.
   survives an Editor restart. Switch agents mid-conversation and the
   thread carries over. While the stone thinks, it rumbles.
 
+## Install
+
+Tao Gunka installs like any third-party Grid Editor package, straight
+from this repository:
+
+1. Open the Grid Editor and go to the **Packages** panel.
+2. Choose to add a third-party package repository and paste this
+   repo's URL:
+   ```
+   https://github.com/sabotond-dev/tao-gunka-ai-assistant-for-grid-editor
+   ```
+3. The Editor reads the package from the URL and lists **Tao Gunka**;
+   install and enable it, then open its preferences. The chat is
+   right there.
+
+The Editor picks the right build for your system from this repo's
+releases (Windows, macOS and Linux are published for every version).
+Updating happens from the same panel when a new version is out.
+
 ## Setup
 
-1. Install this package in the Grid Editor's package manager and open
-   its preferences. The chat is right there.
-2. Click **"First time here? Set up your assistant step by step"** (or
+1. Click **"First time here? Set up your assistant step by step"** (or
    the Setup button next to New chat). The guide walks you through
    connecting your Claude subscription, your ChatGPT subscription, or
    a free local model - every step in plain words, with checkmarks

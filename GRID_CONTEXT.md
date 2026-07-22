@@ -52,6 +52,15 @@ different configs; packages can switch pages via the editor.
   VSN2 $199; Knot $99. DIY kits $119-149. Accessories: Eurorack
   adapter $29, module stand $29, travel case $49.
 
+## The full official API: GRID_API.lua
+
+Next to this file ships `GRID_API.lua`, Intech's official Lua
+annotation file: every API function with its exact signature, types
+and documentation. This reference stays the curated, hardware-tested
+guide; GRID_API.lua is the AUTHORITY on signatures and the place to
+look when a function is not covered here. When they disagree on a
+signature, trust GRID_API.lua and say so.
+
 ## Element Lua essentials
 
 - `self` is the element the script runs on. Persistent per-element
