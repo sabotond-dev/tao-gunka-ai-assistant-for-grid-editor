@@ -2149,13 +2149,24 @@ exports.addMessagePort = async function (port, senderId) {
   });
   port.start();
   sendAgentStatus();
-  // The idol art rides the port once per connect: 60 KB of hand-traced
-  // SVG is too heavy to inline in the component bundle.
+  // The idol art rides the port once per connect (too heavy to inline
+  // in the component bundle). The pixel monster is the thinking
+  // sprite; the traced idol is the fallback. The XML declaration is
+  // stripped because the panel accepts only a bare <svg> root.
   try {
-    toPanel({
-      type: "idol-svg",
-      svg: fs.readFileSync(path.join(__dirname, "tao-gunka-logo.svg"), "utf8"),
-    });
+    let art;
+    for (const name of ["tao-gunka-think.svg", "tao-gunka-logo.svg"]) {
+      try {
+        art = fs.readFileSync(path.join(__dirname, name), "utf8");
+        break;
+      } catch (e) {}
+    }
+    if (art) {
+      toPanel({
+        type: "idol-svg",
+        svg: art.replace(/^<\?xml[^>]*\?>\s*/, ""),
+      });
+    }
   } catch (e) {
     /* art missing: the panel thinks in words alone */
   }
